@@ -47,6 +47,10 @@ yarn-error.log*
 out/
 build/
 
+# Test files
+test_*.py
+*_test.py
+
 # IDE
 .vscode/
 .idea/

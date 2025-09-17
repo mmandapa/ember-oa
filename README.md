@@ -1,208 +1,175 @@
-# Cigna Policy Scraper
+# Cigna Policy Scraper with OpenAI
 
-A comprehensive web scraper to extract policy updates from Cigna's provider news website with a web-based display system.
-
-## Overview
-
-This project extracts all available policy update information from Cigna's provider news site, including:
-- Policy titles and URLs
-- Published dates and categories
-- Full body content
-- Referenced documents
-- Medical codes (CPT/HCPCS, ICD-10)
-- Document changes
+A modern web scraper for Cigna policy updates using OpenAI's API for intelligent content analysis and extraction.
 
 ## Features
 
-- **Comprehensive Coverage**: Extracts ALL policies, including expanded monthly updates
-- **Robust Error Handling**: Handles network issues, missing data, and parsing errors
-- **Data Validation**: Validates extracted data and handles edge cases
-- **Web Interface**: Clean, responsive display system for viewing scraped data
-- **Medical Code Extraction**: Automatically identifies CPT/HCPCS and ICD-10 codes
-- **Document Change Tracking**: Extracts specific content changes mentioned in updates
+- **AI-Powered Analysis**: Uses OpenAI GPT-4 to intelligently extract structured data from policy documents
+- **Comprehensive Data Extraction**: Captures Title, URL, Published Date, Category, Body Content, Referenced Documents, Medical Codes, and Document Changes
+- **Beautiful Dashboard**: Modern, responsive Next.js interface with real-time statistics
+- **Database Integration**: Supabase PostgreSQL database for data storage
+- **Smart Deduplication**: Prevents duplicate entries with intelligent URL matching
 
 ## Project Structure
 
 ```
 ember-oa/
-├── backend/
-│   ├── scraper/
-│   │   ├── __init__.py
-│   │   ├── main_scraper.py      # Main scraping logic
-│   │   ├── data_extractor.py    # Data extraction utilities
-│   │   ├── error_handler.py     # Error handling and logging
-│   │   └── validators.py        # Data validation
-│   ├── database/
-│   │   ├── __init__.py
-│   │   ├── supabase_client.py   # Supabase connection
-│   │   ├── models.py            # Database models/schemas
-│   │   └── migrations/          # Database migrations
-│   └── utils/
-│       ├── __init__.py
-│       ├── config.py            # Configuration settings
-│       └── helpers.py           # Utility functions
-├── frontend/
+├── scraper.py                 # OpenAI-powered scraper
+├── requirements.txt           # Python dependencies
+├── schema.sql                # Database schema
+├── .env                       # Environment variables
+├── env.example               # Environment variables template
+├── frontend/                 # Next.js frontend
 │   ├── src/
-│   │   ├── components/          # React components
-│   │   ├── pages/               # Page components
-│   │   ├── hooks/               # Custom React hooks
-│   │   ├── services/            # API services
-│   │   └── utils/               # Frontend utilities
-│   ├── public/
+│   │   ├── pages/
+│   │   │   ├── index.tsx                    # Landing page
+│   │   │   ├── beautiful-dashboard.tsx      # Main dashboard
+│   │   │   └── api/
+│   │   │       └── scrape.ts               # API endpoint
+│   │   ├── utils/
+│   │   │   └── supabase.ts                 # Supabase client
+│   │   └── types/
+│   │       └── policy.ts                   # TypeScript types
 │   └── package.json
-├── data/                        # Local data storage
-├── logs/                        # Log files
-├── tests/                       # Unit tests
-├── .env.example                 # Environment variables template
-├── requirements.txt
 └── README.md
 ```
 
-## Setup Instructions
+## Prerequisites
 
-### Prerequisites
-- Python 3.8+
+- Python 3.9+
 - Node.js 18+
-- Supabase account (for database)
+- Supabase account
+- OpenAI API key
 
-### 1. Clone and Setup Backend
+## Setup
+
+### 1. Clone and Install Dependencies
 
 ```bash
-git clone https://github.com/mmandapa/ember-oa.git
+git clone <your-repo-url>
 cd ember-oa
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
 # Install Python dependencies
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-### 2. Setup Supabase Database
-
-1. Create a new Supabase project at [supabase.com](https://supabase.com)
-2. Copy your project URL and API keys
-3. Create a `.env` file from the example:
-   ```bash
-   cp env.example .env
-   ```
-4. Update `.env` with your Supabase credentials:
-   ```
-   SUPABASE_URL=your_supabase_project_url
-   SUPABASE_KEY=your_supabase_anon_key
-   SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-   ```
-
-### 3. Initialize Database Schema
-
-Run the SQL commands from `backend/database/models.py` in your Supabase SQL editor to create the required tables.
-
-### 4. Setup Frontend
-
-```bash
+# Install Node.js dependencies
 cd frontend
-
-# Install dependencies
 npm install
-
-# Create environment file
-cp .env.example .env.local
+cd ..
 ```
 
-Update `frontend/.env.local`:
-```
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
-```
+### 2. Environment Configuration
 
-### 5. Run the Application
+Copy the environment template and fill in your credentials:
 
-**Backend (Scraper):**
 ```bash
-# From project root
-python backend/scraper/main_scraper.py
+cp env.example .env
 ```
 
-**Frontend (Web Interface):**
+Edit `.env` with your credentials:
+```
+# Supabase Configuration
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-anon-key
+
+# Frontend Environment Variables
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+
+# OpenAI Configuration
+OPENAI_API_KEY=your-openai-api-key
+```
+
+### 3. Database Setup
+
+Run the SQL commands in `schema.sql` in your Supabase SQL Editor to create the database tables.
+
+### 4. Run the Application
+
 ```bash
-# From frontend directory
+# Start the frontend
+cd frontend
 npm run dev
+
+# The dashboard will be available at http://localhost:3000
 ```
-
-### 6. View Results
-
-Open your browser and navigate to `http://localhost:3000`
 
 ## Usage
 
-### Running the Scraper
-```bash
-python src/scraper/main_scraper.py
-```
+### Dashboard
 
-### Viewing Results
-The web interface provides:
-- Policy listing with search and filter capabilities
-- Detailed policy view with all extracted information
-- Medical codes highlighting
-- Document change tracking
-- Export functionality
+1. Open http://localhost:3000
+2. Click "Open Dashboard" to access the main interface
+3. Use the sidebar to navigate between different views:
+   - **Dashboard**: Statistics overview
+   - **All Policies**: Complete policy list
+   - **Recent Updates**: Policies updated this week
+   - **Medical/Pharmacy/Behavioral**: Category-specific views
+   - **Medical Codes**: All extracted codes
+   - **Document Changes**: All policy changes
+
+### Running the Scraper
+
+1. In the dashboard, click "Run Scraper" button
+2. The OpenAI-powered scraper will analyze policy documents
+3. Progress will be shown in real-time
+4. Data will automatically refresh when complete
+
+### Data Extraction
+
+The OpenAI-powered scraper extracts the following data for each policy:
+
+- **Title**: Policy title/headline
+- **URL**: Direct link to the policy document
+- **Published Date**: When the policy was published
+- **Category**: Policy classification (New, Updated, Retired)
+- **Body Content**: Full text content
+- **Referenced Documents**: Related policy documents
+- **Medical Codes**: CPT/HCPCS/ICD-10 codes with descriptions
+- **Document Changes**: Specific changes made
 
 ## Technical Details
 
-### Data Extraction
-- **Title**: Policy headline/title
-- **URL**: Direct link to full policy document
-- **Published Date**: Release/publication date
-- **Category**: Policy classification
-- **Body Content**: Full text content (HTML format for tables)
-- **Referenced Documents**: Links to medical policies, clinical guidelines
-- **Medical Codes**: CPT/HCPCS codes, ICD-10 codes with descriptions
-- **Document Changes**: Specific content modifications mentioned
+### OpenAI Integration
 
-### Error Handling
-- Network timeout and retry logic
-- Missing data field handling
-- HTML parsing error recovery
-- Comprehensive logging system
+- **Model**: GPT-4o-mini for cost-effective analysis
+- **Prompt Engineering**: Structured prompts for consistent data extraction
+- **Error Handling**: Robust error handling for API failures
+- **Rate Limiting**: Built-in delays to respect API limits
 
-### Data Validation
-- Required field validation
-- Date format validation
-- URL format validation
-- Medical code format validation
+### Dashboard Features
 
-## Limitations and Assumptions
+- **Modern UI**: Clean, professional interface
+- **Responsive Design**: Works on all screen sizes
+- **Real-time Updates**: Live data refresh
+- **Advanced Search**: Search across all policy fields
+- **Filtering**: Filter by category, date, and status
+- **Detail Panel**: Comprehensive policy information display
 
-### Limitations
-- Website structure changes may require scraper updates
-- Dynamic content loading may need Selenium for JavaScript-heavy pages
-- Rate limiting to respect server resources
-- Some policy documents may require authentication
+## API Endpoints
 
-### Assumptions
-- Website HTML structure remains relatively stable
-- Policy updates follow consistent formatting patterns
-- Medical codes follow standard formatting conventions
-- Policy documents are publicly accessible
+- `POST /api/scrape` - Runs the OpenAI-powered scraper
 
-## Compliance
+## Database Schema
 
-This scraper is designed to:
-- Respect robots.txt directives
-- Implement reasonable request delays
-- Use appropriate User-Agent headers
-- Follow ethical web scraping practices
+The application uses the following main tables:
+
+- `policy_updates` - Main policy information
+- `medical_codes` - Extracted medical codes
+- `referenced_documents` - Related documents
+- `document_changes` - Policy changes
+- `scraping_logs` - Scraping operation logs
 
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests for new functionality
+4. Test thoroughly
 5. Submit a pull request
 
 ## License
 
-This project is for educational and demonstration purposes.
+This project is for educational purposes. Please respect Cigna's terms of service and robots.txt when scraping their website.

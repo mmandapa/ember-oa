@@ -9,8 +9,7 @@ export default async function handler(req, res) {
   try {
     const scraperPath = path.join(process.cwd(), '..', 'scraper.py')
     
-    const pythonPath = path.join(process.cwd(), '..', 'venv', 'bin', 'python')
-    const scraper = spawn(pythonPath, [scraperPath], {
+    const scraper = spawn('python', [scraperPath], {
       cwd: path.join(process.cwd(), '..'),
       env: {
         ...process.env
