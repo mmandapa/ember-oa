@@ -606,20 +606,6 @@ export default function BeautifulDashboard() {
               </div>
             </div>
             <div className="detail-content">
-              {/* Body Content Section */}
-              {selectedPolicy.body_content && (
-                <>
-                  <div className="section-title">
-                    <i className="fas fa-file-text"></i>
-                    Body Content
-                  </div>
-                  <div className="body-content-section">
-                    <div className="body-content-text">
-                      {selectedPolicy.body_content}
-                    </div>
-                  </div>
-                </>
-              )}
 
               {selectedPolicy.medical_codes.length > 0 && (
                 <>
@@ -679,7 +665,9 @@ export default function BeautifulDashboard() {
                   <div className="documents-list scrollable-section">
                     {selectedPolicy.referenced_documents.map((doc) => (
                       <div key={doc.id} className="document-item">
-                        <div className="document-title">{doc.document_title}</div>
+                        <div className="document-title" title={doc.document_title}>
+                          {doc.document_title}
+                        </div>
                         <div className="document-type">{doc.document_type}</div>
                         {doc.document_url && (
                           <a 
@@ -1032,20 +1020,6 @@ export default function BeautifulDashboard() {
           font-style: italic;
         }
 
-        .body-content-section {
-          background: #f8fafc;
-          border: 1px solid #e2e8f0;
-          border-radius: 8px;
-          padding: 16px;
-          margin-bottom: 20px;
-        }
-
-        .body-content-text {
-          color: #374151;
-          font-size: 14px;
-          line-height: 1.6;
-          white-space: pre-wrap;
-        }
 
         .code-info {
           display: flex;
@@ -1088,24 +1062,43 @@ export default function BeautifulDashboard() {
         }
 
         .document-item {
-          padding: 12px 0;
+          padding: 16px 12px;
           border-bottom: 1px solid #e2e8f0;
+          background: #ffffff;
+          border-radius: 6px;
+          margin-bottom: 8px;
+          border: 1px solid #e2e8f0;
+          transition: all 0.2s ease;
+        }
+
+        .document-item:hover {
+          border-color: #0066cc;
+          box-shadow: 0 2px 8px rgba(0, 102, 204, 0.1);
         }
 
         .document-item:last-child {
-          border-bottom: none;
+          border-bottom: 1px solid #e2e8f0;
+          margin-bottom: 0;
         }
 
         .document-title {
           font-weight: 600;
           color: #1a1a1a;
           margin-bottom: 4px;
+          word-wrap: break-word;
+          word-break: break-word;
+          line-height: 1.4;
+          white-space: normal;
+          overflow-wrap: break-word;
         }
 
         .document-type {
           font-size: 12px;
           color: #6b7280;
           margin-bottom: 8px;
+          font-weight: 500;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
         }
 
         .document-link {
@@ -1115,10 +1108,18 @@ export default function BeautifulDashboard() {
           display: flex;
           align-items: center;
           gap: 4px;
+          padding: 4px 8px;
+          border-radius: 4px;
+          background: #f0f9ff;
+          border: 1px solid #e0f2fe;
+          transition: all 0.2s ease;
         }
 
         .document-link:hover {
-          text-decoration: underline;
+          background: #0066cc;
+          color: white;
+          border-color: #0066cc;
+          text-decoration: none;
         }
 
         .change-header {
@@ -1221,30 +1222,33 @@ export default function BeautifulDashboard() {
         }
 
         .scrollable-section {
-          max-height: 300px;
+          max-height: 400px;
           overflow-y: auto;
           border: 1px solid #e2e8f0;
           border-radius: 8px;
           padding: 16px;
           margin-bottom: 20px;
+          background: #ffffff;
         }
 
         .scrollable-section::-webkit-scrollbar {
-          width: 6px;
+          width: 8px;
         }
 
         .scrollable-section::-webkit-scrollbar-track {
           background: #f1f5f9;
-          border-radius: 3px;
+          border-radius: 4px;
         }
 
         .scrollable-section::-webkit-scrollbar-thumb {
           background: #cbd5e1;
-          border-radius: 3px;
+          border-radius: 4px;
+          border: 1px solid #e2e8f0;
         }
 
         .scrollable-section::-webkit-scrollbar-thumb:hover {
           background: #94a3b8;
+          border-color: #cbd5e1;
         }
 
         .code-item {
