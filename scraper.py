@@ -88,11 +88,15 @@ class CignaPolicyScraper:
                     for link in hyperlinks:
                         print(f"    🔗 Found hyperlink: {link['url']}")
                         title = link.get('title') or 'Unknown Policy'
+                        
+                        # Extract comments from table data for this policy
+                        comments = self.extract_comments_from_tables_for_url(page, link['url'])
+                        
                         policy_links.append({
                             'title': title,
                             'url': link['url'],
                             'policy_number': self.extract_policy_number_from_url(link['url']),
-                            'comments': link.get('comments') or ''
+                            'comments': comments
                         })
                     
                     # Also extract text and tables as fallback
@@ -178,7 +182,12 @@ class CignaPolicyScraper:
                 print(f"    🔍 Contains 'mm_': {'mm_' in url}")
                 print(f"    🔍 Ends with '.pdf': {url.endswith('.pdf')}")
                 
-                if 'static.cigna.com' in url and 'mm_' in url and url.endswith('.pdf'):
+                # Check for any Cigna policy pattern (mm_, ip_, ph_, etc.)
+                is_cigna_policy = ('static.cigna.com' in url and 
+                                 url.endswith('.pdf') and 
+                                 ('mm_' in url or 'ip_' in url or 'ph_' in url or 'coveragepositioncriteria' in url))
+                
+                if is_cigna_policy:
                     print(f"    ✅ This is a Cigna policy link!")
                     cigna_links.append(link)
                 else:
@@ -191,26 +200,81 @@ class CignaPolicyScraper:
             print(f"    ⚠️ Error extracting hyperlinks: {e}")
             return []
 
+    def extract_title_from_url(self, url):
+        """Extract policy title from URL"""
+        try:
+            import re
+            
+            # Extract policy name from URL for any policy type
+            patterns = [
+                r'mm_\d+_coveragepositioncriteria_(.+)\.pdf',
+                r'ip_\d+_coveragepositioncriteria_(.+)\.pdf',
+                r'ph_\d+_coveragepositioncriteria_(.+)\.pdf'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, url)
+                if match:
+                    policy_name = match.group(1).replace('_', ' ').title()
+                    # Extract policy number from URL
+                    policy_num_match = re.search(r'(mm_|ip_|ph_)(\d+)', url)
+                    if policy_num_match:
+                        policy_type = policy_num_match.group(1).upper().rstrip('_')
+                        policy_number = policy_num_match.group(2)
+                        return f"{policy_name} - ({policy_type}{policy_number})"
+                    return policy_name
+            
+            return 'Unknown Policy'
+        except:
+            return 'Unknown Policy'
+
+    def is_cell_near_hyperlink(self, table, row, cell, x0, y0, x1, y1):
+        """Check if a table cell is near the hyperlink coordinates"""
+        try:
+            # For now, just return True to use the first matching cell
+            # This is a simplified approach - in a real implementation,
+            # we would need to map table cell coordinates to PDF coordinates
+            return True
+        except:
+            return False
+
     def extract_title_near_coordinates(self, page, annot):
         """Extract policy title from text near the hyperlink coordinates"""
         try:
             # Get the coordinates of the hyperlink
             x0, y0, x1, y1 = annot.get('x0', 0), annot.get('y0', 0), annot.get('x1', 0), annot.get('y1', 0)
             
-            # First try to extract from tables
+            # Extract title from URL first (most reliable)
+            url = annot.get('uri', '')
+            if url:
+                title_from_url = self.extract_title_from_url(url)
+                if title_from_url and title_from_url != 'Unknown Policy':
+                    print(f"    📝 Extracted title from URL: '{title_from_url}'")
+                    return title_from_url
+            
+            # Fallback: try to extract from tables
             tables = page.extract_tables()
             if tables:
                 for table in tables:
                     for row in table:
                         for cell in row:
                             if cell and isinstance(cell, str):
-                                # Look for policy patterns in the cell text
-                                if 'mm_' in cell.lower() or 'coverage' in cell.lower():
-                                    # This might be a policy title
-                                    title_text = cell.strip()
-                                    if title_text and len(title_text) > 10:  # Reasonable title length
-                                        print(f"    📝 Extracted title from table: '{title_text}'")
-                                        return title_text
+                                cell_text = cell.strip()
+                                # Skip generic headers and look for actual policy names
+                                if (len(cell_text) < 100 and 
+                                    len(cell_text) > 5 and 
+                                    not cell_text.startswith('•') and 
+                                    not cell_text.startswith('Effective') and
+                                    not 'Policy Statement' in cell_text and
+                                    not 'authorizes coverage' in cell_text.lower() and
+                                    not 'Coverage Policy Unit' in cell_text and
+                                    not 'Monthly Policy Updates' in cell_text and
+                                    not 'CPU' in cell_text and
+                                    not cell_text.startswith('and ') and  # Skip partial titles
+                                    # Look for policy names that contain policy numbers in parentheses
+                                    ('(' in cell_text and ')' in cell_text)):
+                                    print(f"    📝 Extracted title from table: '{cell_text}'")
+                                    return cell_text
             
             # Fallback: Extract text from words near the hyperlink coordinates
             words = page.extract_words()
@@ -240,18 +304,26 @@ class CignaPolicyScraper:
             else:
                 # Last resort: extract title from URL
                 url = annot.get('uri', '')
-                if 'mm_' in url:
-                    # Extract policy name from URL
+                if url:
+                    # Extract policy name from URL for any policy type
                     import re
-                    match = re.search(r'mm_\d+_coveragepositioncriteria_(.+)\.pdf', url)
-                    if match:
-                        policy_name = match.group(1).replace('_', ' ').title()
-                        print(f"    📝 Extracted title from URL: '{policy_name}'")
-                        return policy_name
+                    patterns = [
+                        r'mm_\d+_coveragepositioncriteria_(.+)\.pdf',
+                        r'ip_\d+_coveragepositioncriteria_(.+)\.pdf', 
+                        r'ph_\d+_coveragepositioncriteria_(.+)\.pdf',
+                        r'ph_\d+_coverageposition_(.+)\.pdf'
+                    ]
+                    
+                    for pattern in patterns:
+                        match = re.search(pattern, url)
+                        if match:
+                            policy_name = match.group(1).replace('_', ' ').title()
+                            print(f"    📝 Extracted title from URL: '{policy_name}'")
+                            return policy_name
                 
                 print(f"    ⚠️ Could not extract title from coordinates")
                 return 'Unknown Policy'
-                
+            
         except Exception as e:
             print(f"    ⚠️ Error extracting title: {e}")
             return 'Unknown Policy'
@@ -352,6 +424,40 @@ class CignaPolicyScraper:
                 comments.append(context.strip())
         
         return '; '.join(comments[:3]) if comments else ''
+
+    def extract_comments_from_tables_for_url(self, page, url):
+        """Extract comments from table data for a specific policy URL"""
+        try:
+            # Extract policy number from URL
+            policy_number = self.extract_policy_number_from_url(url)
+            if not policy_number:
+                return ''
+            
+            # Extract tables from the page
+            tables = page.extract_tables()
+            if not tables:
+                return ''
+            
+            # Look for the policy in table rows and extract comments
+            for table in tables:
+                for row in table:
+                    if not row or len(row) < 2:
+                        continue
+                    
+                    # Join all cells in the row to create a searchable text
+                    row_text = ' '.join([str(cell) for cell in row if cell])
+                    
+                    # Check if this row contains our policy number
+                    if policy_number in row_text:
+                        # Extract comments from this row
+                        comments = self.extract_comments_for_policy(row_text, '', policy_number)
+                        if comments:
+                            return comments
+            
+            return ''
+        except Exception as e:
+            print(f"    ⚠️ Error extracting comments: {e}")
+            return ''
 
     def extract_text_from_policy_pdf(self, pdf_content):
         """Extract text from individual policy PDF"""
@@ -802,9 +908,9 @@ class CignaPolicyScraper:
         monthly_links = self.fetch_monthly_links()
             
         if not monthly_links:
-                print("❌ No monthly links found")
-                return
-            
+            print("❌ No monthly links found")
+            return
+        
         print(f"📅 Found {len(monthly_links)} monthly pages")
             
         # Process first 5 monthly PDFs for testing
