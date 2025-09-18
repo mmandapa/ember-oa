@@ -554,57 +554,148 @@ class CignaPolicyScraper:
         return ""
 
     def extract_referenced_documents(self, text):
-        """Extract referenced documents using spaCy and regex"""
+        """Extract referenced documents from the References section of individual policy documents"""
         documents = []
+        seen_documents = set()  # Prevent duplicates
         
-        # Use spaCy to process the text
-        doc = self.nlp(text)
-        
-        # Look for sections that typically contain referenced documents
-        referenced_sections = [
-            "Related Coverage Resources",
-            "Related Policies", 
-            "See also",
-            "Related Documents",
-            "Additional Resources",
-            "Clinical Guidelines",
-            "Reimbursement Policies"
+        # Look specifically for References section in policy documents
+        references_patterns = [
+            r'References?\s*[:\-]?\s*\n(.*?)(?=\n\n[A-Z][a-z]+:|$)',
+            r'Bibliography\s*[:\-]?\s*\n(.*?)(?=\n\n[A-Z][a-z]+:|$)',
+            r'Related\s+Documents?\s*[:\-]?\s*\n(.*?)(?=\n\n[A-Z][a-z]+:|$)',
+            r'Supporting\s+Documentation\s*[:\-]?\s*\n(.*?)(?=\n\n[A-Z][a-z]+:|$)'
         ]
         
-        for section in referenced_sections:
-            # Find the section in the text
-            section_pattern = rf'{re.escape(section)}.*?(?=\n\n|\n[A-Z][a-z]+:|$)'
-            section_match = re.search(section_pattern, text, re.IGNORECASE | re.DOTALL)
-            
-            if section_match:
-                section_text = section_match.group(0)
+        references_content = ""
+        for pattern in references_patterns:
+            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if match:
+                references_content = match.group(1).strip()
+                print(f"    📋 Found References section")
+                break
+        
+        if not references_content:
+            print(f"    📋 No References section found")
+            return documents
+        
+        # Extract different types of references from the References section
+        # 1. Policy references (mm_, ip_, ph_)
+        policy_patterns = [
+            (r'mm_(\d{4})', 'Medical Policy'),
+            (r'ip_(\d{4})', 'Pharmacy Policy'),
+            (r'ph_(\d{4})', 'Pharmacy Policy')
+        ]
+        
+        for pattern, doc_type in policy_patterns:
+            matches = re.finditer(pattern, references_content)
+            for match in matches:
+                policy_number = match.group(1)
                 
-                # Look for policy references in this section
-                policy_refs = re.finditer(r'mm_(\d{4})', section_text)
-                for ref in policy_refs:
-                    policy_number = ref.group(1)
+                # Create unique identifier
+                doc_id = f"{doc_type}_{policy_number}"
+                if doc_id in seen_documents:
+                    continue
+                seen_documents.add(doc_id)
+                
+                # Extract title from context
+                title = self.extract_reference_title_from_context(references_content, match.start(), match.end())
+                
+                # Construct URL
+                if doc_type == 'Medical Policy':
                     policy_url = f"https://static.cigna.com/assets/chcp/pdf/coveragePolicies/medical/mm_{policy_number}_coveragepositioncriteria.pdf"
-                    
-                    # Try to extract the policy title from context
-                    start = max(0, ref.start() - 100)
-                    end = min(len(section_text), ref.end() + 100)
-                    context = section_text[start:end]
-                    
-                    # Extract title using spaCy
-                    context_doc = self.nlp(context)
-                    title = ""
-                    for sent in context_doc.sents:
-                        if policy_number in sent.text:
-                            title = sent.text.strip()
-                            break
-                    
+                else:
+                    policy_url = f"https://static.cigna.com/assets/chcp/pdf/coveragePolicies/pharmacy/{pattern.split('_')[0]}_{policy_number}_coveragepositioncriteria.pdf"
+                
+                documents.append({
+                    'document_title': title or f"{doc_type} {policy_number}",
+                    'document_url': policy_url,
+                    'document_type': doc_type
+                })
+        
+        # 2. Clinical guidelines and standards
+        guideline_patterns = [
+            (r'([A-Z][^.\n]{20,150}(?:guideline|protocol|standard|recommendation)[^.\n]*)', 'Clinical Guideline'),
+            (r'([A-Z][^.\n]{20,150}(?:study|research|trial)[^.\n]*)', 'Research Study'),
+            (r'([A-Z][^.\n]{20,150}(?:association|society|academy)[^.\n]*)', 'Professional Organization')
+        ]
+        
+        for pattern, doc_type in guideline_patterns:
+            matches = re.finditer(pattern, references_content, re.IGNORECASE)
+            for match in matches:
+                guideline_text = match.group(1).strip()
+                
+                # Clean up the text
+                guideline_text = re.sub(r'^\W+|\W+$', '', guideline_text)  # Remove leading/trailing punctuation
+                guideline_text = re.sub(r'\s+', ' ', guideline_text)  # Normalize whitespace
+                
+                if len(guideline_text) > 20 and len(guideline_text) < 300:
+                    # Create unique identifier
+                    doc_id = f"{doc_type}_{guideline_text[:50]}"
+                    if doc_id not in seen_documents:
+                        seen_documents.add(doc_id)
+                        documents.append({
+                            'document_title': guideline_text,
+                            'document_url': '',
+                            'document_type': doc_type
+                        })
+        
+        # 3. Extract numbered references (common in academic papers)
+        numbered_refs = re.finditer(r'(\d+)\.\s*([^.\n]{20,200})', references_content)
+        for match in numbered_refs:
+            ref_text = match.group(2).strip()
+            
+            # Clean up the text
+            ref_text = re.sub(r'^\W+|\W+$', '', ref_text)
+            ref_text = re.sub(r'\s+', ' ', ref_text)
+            
+            if len(ref_text) > 20 and len(ref_text) < 300:
+                # Create unique identifier
+                doc_id = f"Reference_{ref_text[:50]}"
+                if doc_id not in seen_documents:
+                    seen_documents.add(doc_id)
                     documents.append({
-                        'document_title': title or f"Policy {policy_number}",
-                        'document_url': policy_url,
-                        'document_type': 'Medical Policy'
+                        'document_title': ref_text,
+                        'document_url': '',
+                        'document_type': 'Reference'
                     })
         
+        print(f"    📚 Extracted {len(documents)} referenced documents from References section")
         return documents
+    
+    def extract_reference_title_from_context(self, text, start_pos, end_pos):
+        """Extract reference title from context around a policy reference in References section"""
+        try:
+            # Get context around the policy reference
+            context_start = max(0, start_pos - 200)
+            context_end = min(len(text), end_pos + 200)
+            context = text[context_start:context_end]
+            
+            # Use spaCy to extract meaningful sentences
+            context_doc = self.nlp(context)
+            
+            # Look for sentences that contain the policy reference
+            for sent in context_doc.sents:
+                sent_text = sent.text.strip()
+                
+                # Skip very short or very long sentences
+                if len(sent_text) < 15 or len(sent_text) > 400:
+                    continue
+                
+                # Look for sentences that contain policy numbers
+                if re.search(r'\d{4}', sent_text):
+                    # Clean up the sentence
+                    title = sent_text
+                    # Remove common prefixes
+                    title = re.sub(r'^(policy|coverage|medical|pharmacy|see|refer|also)\s*[:\-]?\s*', '', title, flags=re.IGNORECASE)
+                    # Remove trailing punctuation
+                    title = re.sub(r'\s*[:\-]\s*$', '', title)
+                    
+                    if len(title) > 15 and len(title) < 300:
+                        return title
+            
+            return ""
+        except:
+            return ""
 
     def extract_document_changes(self, comments):
         """Extract document changes from monthly comments"""
@@ -653,7 +744,7 @@ class CignaPolicyScraper:
                 'policy_url': policy_url,
                 'published_date': self.extract_published_date(policy_text, month_year),
                 'category': self.extract_category(policy_text),
-                'body_content': policy_text[:2000],  # Limit body content
+                'body_content': policy_text,  # Full policy text content
                 'referenced_documents': referenced_documents,
                 'medical_codes': medical_codes,
                 'document_changes': document_changes

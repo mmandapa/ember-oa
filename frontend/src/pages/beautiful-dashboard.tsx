@@ -627,8 +627,8 @@ export default function BeautifulDashboard() {
                     <i className="fas fa-code"></i>
                     Medical Codes ({selectedPolicy.medical_codes.length})
                   </div>
-                  <div className="code-list">
-                    {selectedPolicy.medical_codes.slice(0, 10).map((code) => (
+                  <div className="code-list scrollable-section">
+                    {selectedPolicy.medical_codes.map((code) => (
                       <div key={code.id} className="code-item">
                         <div className="code-info">
                           <span className="code-value">{code.code}</span>
@@ -644,13 +644,6 @@ export default function BeautifulDashboard() {
                         )}
                       </div>
                     ))}
-                    {selectedPolicy.medical_codes.length > 10 && (
-                      <div className="code-item">
-                        <span style={{ color: '#6b7280', fontSize: '12px' }}>
-                          ... and {selectedPolicy.medical_codes.length - 10} more codes
-                        </span>
-                      </div>
-                    )}
                   </div>
                 </>
               )}
@@ -661,8 +654,8 @@ export default function BeautifulDashboard() {
                     <i className="fas fa-edit"></i>
                     Document Changes ({selectedPolicy.document_changes.length})
                   </div>
-                  <div className="changes-list">
-                    {selectedPolicy.document_changes.slice(0, 5).map((change) => (
+                  <div className="changes-list scrollable-section">
+                    {selectedPolicy.document_changes.map((change) => (
                       <div key={change.id} className="change-item">
                         <div className="change-header">
                           <span className="change-type">{change.change_type}</span>
@@ -673,13 +666,6 @@ export default function BeautifulDashboard() {
                         <div className="change-description">{change.change_description}</div>
                       </div>
                     ))}
-                    {selectedPolicy.document_changes.length > 5 && (
-                      <div className="change-item">
-                        <span style={{ color: '#6b7280', fontSize: '12px' }}>
-                          ... and {selectedPolicy.document_changes.length - 5} more changes
-                        </span>
-                      </div>
-                    )}
                   </div>
                 </>
               )}
@@ -690,8 +676,8 @@ export default function BeautifulDashboard() {
                     <i className="fas fa-file-alt"></i>
                     Referenced Documents ({selectedPolicy.referenced_documents.length})
                   </div>
-                  <div className="documents-list">
-                    {selectedPolicy.referenced_documents.slice(0, 5).map((doc) => (
+                  <div className="documents-list scrollable-section">
+                    {selectedPolicy.referenced_documents.map((doc) => (
                       <div key={doc.id} className="document-item">
                         <div className="document-title">{doc.document_title}</div>
                         <div className="document-type">{doc.document_type}</div>
@@ -708,13 +694,6 @@ export default function BeautifulDashboard() {
                         )}
                       </div>
                     ))}
-                    {selectedPolicy.referenced_documents.length > 5 && (
-                      <div className="document-item">
-                        <span style={{ color: '#6b7280', fontSize: '12px' }}>
-                          ... and {selectedPolicy.referenced_documents.length - 5} more documents
-                        </span>
-                      </div>
-                    )}
                   </div>
                 </>
               )}
@@ -724,10 +703,7 @@ export default function BeautifulDashboard() {
                 Policy Content
               </div>
               <div className="policy-content">
-                {selectedPolicy.body_content.length > 500 
-                  ? `${selectedPolicy.body_content.substring(0, 500)}...`
-                  : selectedPolicy.body_content
-                }
+                {selectedPolicy.body_content}
               </div>
             </div>
           </aside>
@@ -1244,6 +1220,33 @@ export default function BeautifulDashboard() {
           margin-bottom: 20px;
         }
 
+        .scrollable-section {
+          max-height: 300px;
+          overflow-y: auto;
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+          padding: 16px;
+          margin-bottom: 20px;
+        }
+
+        .scrollable-section::-webkit-scrollbar {
+          width: 6px;
+        }
+
+        .scrollable-section::-webkit-scrollbar-track {
+          background: #f1f5f9;
+          border-radius: 3px;
+        }
+
+        .scrollable-section::-webkit-scrollbar-thumb {
+          background: #cbd5e1;
+          border-radius: 3px;
+        }
+
+        .scrollable-section::-webkit-scrollbar-thumb:hover {
+          background: #94a3b8;
+        }
+
         .code-item {
           display: flex;
           justify-content: space-between;
@@ -1326,6 +1329,26 @@ export default function BeautifulDashboard() {
           color: #374151;
           font-size: 14px;
           line-height: 1.6;
+          max-height: 400px;
+          overflow-y: auto;
+        }
+
+        .policy-content::-webkit-scrollbar {
+          width: 6px;
+        }
+
+        .policy-content::-webkit-scrollbar-track {
+          background: #f1f5f9;
+          border-radius: 3px;
+        }
+
+        .policy-content::-webkit-scrollbar-thumb {
+          background: #cbd5e1;
+          border-radius: 3px;
+        }
+
+        .policy-content::-webkit-scrollbar-thumb:hover {
+          background: #94a3b8;
         }
 
         /* Statistics Dashboard */
