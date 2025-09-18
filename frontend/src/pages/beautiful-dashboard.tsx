@@ -121,7 +121,9 @@ export default function BeautifulDashboard() {
   const runScraper = async () => {
     try {
       setScraping(true)
-      const response = await fetch('/api/scrape', {
+      
+      // Start the async scraping task via Flask backend
+      const response = await fetch('http://localhost:8000/api/scrape-async', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -129,17 +131,46 @@ export default function BeautifulDashboard() {
       })
 
       const result = await response.json()
-      
+
       if (result.success) {
-        await fetchPoliciesWithDetails()
-        alert('Scraper completed successfully!')
+        // Start polling for task status
+        pollTaskStatus(result.task_id)
       } else {
-        alert(`Scraper failed: ${result.message}`)
+        alert(`Failed to start scraper: ${result.message}`)
+        setScraping(false)
       }
     } catch (error) {
       console.error('Error running scraper:', error)
-      alert('Failed to run scraper')
-    } finally {
+      alert('Failed to start scraper')
+      setScraping(false)
+    }
+  }
+
+  const pollTaskStatus = async (taskId: string) => {
+    try {
+      const response = await fetch(`http://localhost:8000/api/task-status/${taskId}`)
+      const status = await response.json()
+
+      if (status.status === 'SUCCESS') {
+        alert('Scraper completed successfully!')
+        setScraping(false)
+        // Refresh the policies list
+        await fetchPoliciesWithDetails()
+      } else if (status.status === 'FAILURE') {
+        alert(`Scraper failed: ${status.info}`)
+        setScraping(false)
+      } else if (status.status === 'PROGRESS') {
+        // Update progress (you could show this in the UI)
+        console.log(`Progress: ${status.info?.current || 0}/${status.info?.total || 0}`)
+        // Continue polling
+        setTimeout(() => pollTaskStatus(taskId), 2000)
+      } else {
+        // Still processing, continue polling
+        setTimeout(() => pollTaskStatus(taskId), 2000)
+      }
+    } catch (error) {
+      console.error('Error checking task status:', error)
+      alert('Failed to check scraper status')
       setScraping(false)
     }
   }

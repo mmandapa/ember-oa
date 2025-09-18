@@ -14,23 +14,31 @@ A modern web scraper for Cigna policy updates using OpenAI's API for intelligent
 
 ```
 ember-oa/
-├── scraper.py                 # OpenAI-powered scraper
-├── requirements.txt           # Python dependencies
-├── schema.sql                # Database schema
-├── .env                       # Environment variables
-├── env.example               # Environment variables template
-├── frontend/                 # Next.js frontend
+├── backend/                  # Python backend with Celery + Redis
+│   ├── scraper.py           # Main scraper with Celery integration
+│   ├── start_worker.py      # Celery worker startup script
+│   ├── start_scrape_task.py # Task initiation script
+│   ├── check_task_status.py # Task status checker
+│   ├── requirements.txt     # Python dependencies
+│   ├── schema.sql          # Database schema
+│   ├── test_openai.py      # OpenAI testing script
+│   ├── TESTING.md          # Testing documentation
+│   └── README.md           # Backend documentation
+├── frontend/                # Next.js frontend
 │   ├── src/
 │   │   ├── pages/
 │   │   │   ├── index.tsx                    # Landing page
 │   │   │   ├── beautiful-dashboard.tsx      # Main dashboard
 │   │   │   └── api/
-│   │   │       └── scrape.ts               # API endpoint
+│   │   │       ├── scrape-async.ts          # Async scraping API
+│   │   │       └── task-status/[taskId].ts  # Task status API
 │   │   ├── utils/
 │   │   │   └── supabase.ts                 # Supabase client
 │   │   └── types/
 │   │       └── policy.ts                   # TypeScript types
 │   └── package.json
+├── .env                     # Environment variables
+├── env.example             # Environment variables template
 └── README.md
 ```
 
@@ -52,7 +60,7 @@ cd ember-oa
 # Install Python dependencies
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 
 # Install Node.js dependencies
 cd frontend
@@ -84,9 +92,32 @@ OPENAI_API_KEY=your-openai-api-key
 
 ### 3. Database Setup
 
-Run the SQL commands in `schema.sql` in your Supabase SQL Editor to create the database tables.
+Run the SQL commands in `backend/schema.sql` in your Supabase SQL Editor to create the database tables.
 
 ### 4. Run the Application
+
+#### Background Processing System (Recommended)
+
+For large-scale scraping with background processing:
+
+```bash
+# Start Redis server
+redis-server
+
+# Start Celery worker (in a new terminal)
+cd backend
+source ../venv/bin/activate
+python start_worker.py
+
+# Start scraping task (in another terminal)
+cd backend
+source ../venv/bin/activate
+python start_scrape_task.py
+
+# Monitor tasks at http://localhost:5555 (Flower UI)
+```
+
+#### Frontend Only
 
 ```bash
 # Start the frontend
@@ -112,10 +143,17 @@ npm run dev
 
 ### Running the Scraper
 
-1. In the dashboard, click "Run Scraper" button
-2. The OpenAI-powered scraper will analyze policy documents
-3. Progress will be shown in real-time
-4. Data will automatically refresh when complete
+**Option 1: One-Click Startup (Recommended)**
+1. Start the complete system: `cd backend && python start_complete_system.py`
+2. Open your frontend dashboard
+3. Click "Run Scraper" button
+4. The Flask backend will handle everything automatically
+
+**Option 2: Manual Setup**
+1. Start Redis: `redis-server`
+2. Start Celery workers: `cd backend && python start_worker.py`
+3. Start Flask API: `cd backend && python start_flask_server.py`
+4. Open frontend dashboard and click "Run Scraper"
 
 ### Data Extraction
 
@@ -148,9 +186,12 @@ The OpenAI-powered scraper extracts the following data for each policy:
 - **Filtering**: Filter by category, date, and status
 - **Detail Panel**: Comprehensive policy information display
 
-## API Endpoints
+## API Endpoints (Flask Backend)
 
-- `POST /api/scrape` - Runs the OpenAI-powered scraper
+- `POST http://localhost:8000/api/scrape-async` - Initiates background scraping task
+- `GET http://localhost:8000/api/task-status/<taskId>` - Checks task status
+- `GET http://localhost:8000/api/health` - Health check
+- `GET http://localhost:8000/api/system-status` - Detailed system status
 
 ## Database Schema
 

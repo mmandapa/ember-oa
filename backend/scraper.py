@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import spacy
 import pdfplumber
 import io
+from celery import Celery
 
 # Load environment variables
 load_dotenv()
@@ -86,16 +87,16 @@ class CignaPolicyScraper:
                     # Extract hyperlinks from the page
                     hyperlinks = self.extract_hyperlinks_from_page(page)
                     for link in hyperlinks:
-                        print(f"    🔗 Found hyperlink: {link['url']}")
+                        print(f"    🔗 Found hyperlink: {link.get('url', 'N/A')}")
                         title = link.get('title') or 'Unknown Policy'
                         
                         # Extract comments from table data for this policy
-                        comments = self.extract_comments_from_tables_for_url(page, link['url'])
+                        comments = self.extract_comments_from_tables_for_url(page, link.get('url', ''))
                         
                         policy_links.append({
                             'title': title,
-                            'url': link['url'],
-                            'policy_number': self.extract_policy_number_from_url(link['url']),
+                            'url': link.get('url') or 'N/A',
+                            'policy_number': self.extract_policy_number_from_url(link.get('url', '')) or 'N/A',
                             'comments': comments
                         })
                     
@@ -864,6 +865,51 @@ class CignaPolicyScraper:
             print(f"  ❌ Error scraping {url}: {e}")
             return False
 
+    def scrape_policy_url_parallel(self, url, month_year):
+        """Scrape individual policy URL with parallel processing of individual policies"""
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            
+            # For PDF URLs, we need to extract policy links from the monthly update PDF
+            if url.endswith('.pdf'):
+                print(f"  📄 Processing PDF: {url}")
+                
+                # Download and parse the PDF to extract policy links
+                policy_links = self.extract_policy_links_from_pdf(response.content, month_year)
+                
+                if not policy_links:
+                    print(f"    ⚠️ No policy links found in {month_year}")
+                    return False
+                
+                # Process individual policies in parallel using Celery
+                from celery import group
+                job = group(process_individual_policy.s(
+                    policy_link['url'], 
+                    policy_link['title'], 
+                    month_year, 
+                    policy_link.get('comments', '')
+                ) for policy_link in policy_links)
+                
+                # Execute all policy processing tasks in parallel (don't wait for results)
+                result = job.apply_async()
+                print(f"    🚀 Dispatched {len(policy_links)} individual policy tasks in parallel")
+                
+                return True
+            else:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                policy_text = soup.get_text()
+                
+                # Analyze with spaCy
+                policy_data = self.analyze_policy_with_spacy(policy_text, url, month_year)
+                
+                if policy_data:
+                    return self.save_policy(policy_data)
+            
+        except Exception as e:
+            print(f"  ❌ Error scraping {url}: {e}")
+            return False
+
     def fetch_individual_policy(self, policy_url, title, month_year, comments=''):
         """Fetch individual policy document and analyze with spaCy"""
         try:
@@ -914,18 +960,18 @@ class CignaPolicyScraper:
                 return False
             
             # Prepare data for insertion
-            # Ensure no None values are saved to database
+            # Mark missing fields as "N/A" to satisfy database constraints
             data = {
-                'title': policy_data.get('title') or 'Unknown Policy',
-                'policy_url': policy_data.get('policy_url') or '',
-                'monthly_pdf_url': policy_data.get('monthly_pdf_url') or '',
-                'policy_number': self.extract_policy_number(policy_data.get('title') or ''),
+                'title': policy_data.get('title') or 'N/A',
+                'policy_url': policy_data.get('policy_url') or 'N/A',
+                'monthly_pdf_url': policy_data.get('monthly_pdf_url') or 'N/A',
+                'policy_number': self.extract_policy_number(policy_data.get('title') or '') or 'N/A',
                 'published_date': policy_data.get('published_date'),
                 'effective_date': policy_data.get('effective_date'),
-                'category': policy_data.get('category') or 'Policy Update',
-                'status': policy_data.get('status') or 'Active',
-                'body_content': policy_data.get('body_content') or '',
-                'month_year': policy_data.get('month_year') or ''
+                'category': policy_data.get('category') or 'N/A',
+                'status': policy_data.get('status') or 'N/A',
+                'body_content': policy_data.get('body_content') or 'N/A',
+                'month_year': policy_data.get('month_year') or 'N/A'
             }
             
             result = self.supabase.table('policy_updates').insert(data).execute()
@@ -1017,6 +1063,144 @@ class CignaPolicyScraper:
         print(f"\n🎉 spaCy scraping completed!")
         print(f"📊 Total policies scraped: {policies_scraped}")
         print(f"⏱️  Execution time: {execution_time:.2f} seconds")
+
+# Celery configuration
+celery_app = Celery(
+    'cigna_scraper',
+    broker='redis://localhost:6379/0',
+    backend='redis://localhost:6379/0'
+)
+
+celery_app.conf.task_serializer = 'json'
+celery_app.conf.accept_content = ['json']
+celery_app.conf.result_serializer = 'json'
+celery_app.conf.timezone = 'UTC'
+celery_app.conf.enable_utc = True
+
+@celery_app.task(bind=True)
+def scrape_all_policies_task(self):
+    """Celery task to scrape all policies in parallel"""
+    scraper = CignaPolicyScraper()
+    monthly_links = scraper.fetch_monthly_links()
+    
+    if not monthly_links:
+        return {'status': 'completed', 'total_pdfs': 0, 'results': []}
+    
+    total_links = len(monthly_links)
+    
+    # Update initial progress
+    self.update_state(
+        state='PROGRESS',
+        meta={
+            'current': 0,
+            'total': total_links,
+            'status': f'Starting parallel processing of {total_links} PDFs...',
+            'pdf_url': 'N/A'
+        }
+    )
+    
+    # Create individual tasks for each PDF and dispatch them
+    from celery import group
+    job = group(process_single_pdf.s(link['url'], link['month_year']) for link in monthly_links)
+    
+    # Execute all tasks in parallel (don't wait for results)
+    result = job.apply_async()
+    
+    # Return the group result ID for monitoring
+    return {
+        'status': 'dispatched',
+        'total_pdfs': total_links,
+        'group_id': result.id,
+        'message': f'Dispatched {total_links} PDF processing tasks in parallel'
+    }
+
+@celery_app.task(bind=True)
+def process_single_pdf(self, pdf_url, month_year):
+    """Process a single PDF in parallel"""
+    try:
+        scraper = CignaPolicyScraper()
+        
+        # Update progress for this individual task
+        self.update_state(
+            state='PROGRESS',
+            meta={
+                'status': f'Processing {month_year}...',
+                'pdf_url': pdf_url
+            }
+        )
+        
+        # Use parallel processing for individual policies within the PDF
+        if scraper.scrape_policy_url_parallel(pdf_url, month_year):
+            return {
+                'status': 'success',
+                'pdf_url': pdf_url,
+                'month_year': month_year,
+                'policies_found': 'processed'
+            }
+        else:
+            return {
+                'status': 'no_policies',
+                'pdf_url': pdf_url,
+                'month_year': month_year,
+                'policies_found': 0
+            }
+            
+    except Exception as e:
+        return {
+            'status': 'error',
+            'pdf_url': pdf_url,
+            'month_year': month_year,
+            'error': str(e)
+        }
+
+@celery_app.task(bind=True)
+def process_individual_policy(self, policy_url, title, month_year, comments=''):
+    """Process a single individual policy in parallel"""
+    try:
+        scraper = CignaPolicyScraper()
+        
+        # Update progress for this individual task
+        self.update_state(
+            state='PROGRESS',
+            meta={
+                'status': f'Processing policy: {title[:30]}...',
+                'policy_url': policy_url
+            }
+        )
+        
+        policy_data = scraper.fetch_individual_policy(policy_url, title, month_year, comments)
+        
+        if policy_data and isinstance(policy_data, dict):
+            if scraper.save_policy(policy_data):
+                return {
+                    'status': 'success',
+                    'policy_url': policy_url,
+                    'title': title,
+                    'month_year': month_year
+                }
+            else:
+                return {
+                    'status': 'save_failed',
+                    'policy_url': policy_url,
+                    'title': title,
+                    'month_year': month_year
+                }
+        else:
+            return {
+                'status': 'no_data',
+                'policy_url': policy_url,
+                'title': title,
+                'month_year': month_year
+            }
+            
+    except Exception as e:
+        return {
+            'status': 'error',
+            'policy_url': policy_url,
+            'title': title,
+            'month_year': month_year,
+            'error': str(e)
+        }
 
 if __name__ == "__main__":
     scraper = CignaPolicyScraper()
