@@ -83,7 +83,19 @@ class CignaPolicyScraper:
                 for page_num, page in enumerate(pdf.pages):
                     print(f"    📖 Processing page {page_num + 1}")
                     
-                    # Extract text and tables
+                    # Extract hyperlinks from the page
+                    hyperlinks = self.extract_hyperlinks_from_page(page)
+                    for link in hyperlinks:
+                        print(f"    🔗 Found hyperlink: {link['url']}")
+                        title = link.get('title') or 'Unknown Policy'
+                        policy_links.append({
+                            'title': title,
+                            'url': link['url'],
+                            'policy_number': self.extract_policy_number_from_url(link['url']),
+                            'comments': link.get('comments') or ''
+                        })
+                    
+                    # Also extract text and tables as fallback
                     text = page.extract_text()
                     tables = page.extract_tables()
                     
@@ -105,6 +117,154 @@ class CignaPolicyScraper:
             print(f"    ❌ Error parsing PDF: {e}")
             return []
     
+    def extract_hyperlinks_from_page(self, page):
+        """Extract hyperlinks from a PDF page"""
+        hyperlinks = []
+        
+        try:
+            # Debug: Check what attributes are available
+            print(f"    🔍 Page attributes: {dir(page)}")
+            
+            # Get annotations (which include hyperlinks)
+            if hasattr(page, 'annots') and page.annots:
+                print(f"    📝 Found {len(page.annots)} annotations")
+                for i, annot in enumerate(page.annots):
+                    print(f"    📝 Annotation {i}: {annot}")
+                    if annot.get('uri'):
+                        print(f"    🔗 Found URI: {annot['uri']}")
+                        # Extract title from text near the hyperlink coordinates
+                        title = self.extract_title_near_coordinates(page, annot)
+                        hyperlinks.append({
+                            'url': annot['uri'],
+                            'title': title,
+                            'comments': ''
+                        })
+                    else:
+                        print(f"    ⚠️ No URI in annotation: {annot}")
+            
+            # Also try to extract links from the page's link annotations
+            if hasattr(page, 'links') and page.links:
+                print(f"    🔗 Found {len(page.links)} links")
+                for link in page.links:
+                    if link.get('uri'):
+                        hyperlinks.append({
+                            'url': link['uri'],
+                            'title': link.get('title', ''),
+                            'comments': ''
+                        })
+            
+            # Try alternative method - look for URLs in text
+            text = page.extract_text()
+            if text:
+                import re
+                # Look for URLs in the text
+                url_pattern = r'https://static\.cigna\.com/[^\s]+\.pdf'
+                urls = re.findall(url_pattern, text)
+                for url in urls:
+                    hyperlinks.append({
+                        'url': url,
+                        'title': 'Extracted from text',
+                        'comments': ''
+                    })
+                print(f"    📄 Found {len(urls)} URLs in text")
+            
+            # Filter for Cigna policy URLs
+            cigna_links = []
+            print(f"    🔍 Checking {len(hyperlinks)} hyperlinks for Cigna policy URLs:")
+            for i, link in enumerate(hyperlinks):
+                url = link['url']
+                print(f"    🔍 Link {i}: {url}")
+                print(f"    🔍 Contains 'static.cigna.com': {'static.cigna.com' in url}")
+                print(f"    🔍 Contains 'mm_': {'mm_' in url}")
+                print(f"    🔍 Ends with '.pdf': {url.endswith('.pdf')}")
+                
+                if 'static.cigna.com' in url and 'mm_' in url and url.endswith('.pdf'):
+                    print(f"    ✅ This is a Cigna policy link!")
+                    cigna_links.append(link)
+                else:
+                    print(f"    ❌ Not a Cigna policy link")
+            
+            print(f"    ✅ Found {len(cigna_links)} Cigna policy links")
+            return cigna_links
+            
+        except Exception as e:
+            print(f"    ⚠️ Error extracting hyperlinks: {e}")
+            return []
+
+    def extract_title_near_coordinates(self, page, annot):
+        """Extract policy title from text near the hyperlink coordinates"""
+        try:
+            # Get the coordinates of the hyperlink
+            x0, y0, x1, y1 = annot.get('x0', 0), annot.get('y0', 0), annot.get('x1', 0), annot.get('y1', 0)
+            
+            # First try to extract from tables
+            tables = page.extract_tables()
+            if tables:
+                for table in tables:
+                    for row in table:
+                        for cell in row:
+                            if cell and isinstance(cell, str):
+                                # Look for policy patterns in the cell text
+                                if 'mm_' in cell.lower() or 'coverage' in cell.lower():
+                                    # This might be a policy title
+                                    title_text = cell.strip()
+                                    if title_text and len(title_text) > 10:  # Reasonable title length
+                                        print(f"    📝 Extracted title from table: '{title_text}'")
+                                        return title_text
+            
+            # Fallback: Extract text from words near the hyperlink coordinates
+            words = page.extract_words()
+            
+            # Find words near the hyperlink coordinates
+            nearby_words = []
+            for word in words:
+                word_x0, word_y0, word_x1, word_y1 = word.get('x0', 0), word.get('y0', 0), word.get('x1', 0), word.get('y1', 0)
+                
+                # Check if word is in the same row (similar y-coordinates) and nearby horizontally
+                if (abs(word_y0 - y0) < 15 and  # Same row (within 15 pixels vertically)
+                    word_x0 < x1 + 100 and      # Not too far to the right
+                    word_x1 > x0 - 100):        # Not too far to the left
+                    nearby_words.append(word)
+            
+            # Sort words by x-coordinate to get them in reading order
+            nearby_words.sort(key=lambda w: w.get('x0', 0))
+            
+            # Extract the text from nearby words
+            title_text = ' '.join([word.get('text', '') for word in nearby_words])
+            
+            # Clean up the title
+            title_text = title_text.strip()
+            if title_text and len(title_text) > 5:  # Reasonable title length
+                print(f"    📝 Extracted title from words: '{title_text}'")
+                return title_text
+            else:
+                # Last resort: extract title from URL
+                url = annot.get('uri', '')
+                if 'mm_' in url:
+                    # Extract policy name from URL
+                    import re
+                    match = re.search(r'mm_\d+_coveragepositioncriteria_(.+)\.pdf', url)
+                    if match:
+                        policy_name = match.group(1).replace('_', ' ').title()
+                        print(f"    📝 Extracted title from URL: '{policy_name}'")
+                        return policy_name
+                
+                print(f"    ⚠️ Could not extract title from coordinates")
+                return 'Unknown Policy'
+                
+        except Exception as e:
+            print(f"    ⚠️ Error extracting title: {e}")
+            return 'Unknown Policy'
+
+    def extract_policy_number_from_url(self, url):
+        """Extract policy number from URL"""
+        try:
+            # Look for pattern like mm_0586_ in the URL
+            match = re.search(r'mm_(\d{4})_', url)
+            return match.group(1) if match else ''
+        except:
+            return ''
+
     def extract_policy_patterns_from_text(self, text, month_year):
         """Extract policy patterns from PDF text"""
         policies = []
@@ -429,8 +589,8 @@ class CignaPolicyScraper:
             r'Published Date:\s*(\d{1,2}/\d{1,2}/\d{4})',
             r'Date:\s*(\d{1,2}/\d{1,2}/\d{4})',
             r'(\d{1,2}/\d{1,2}/\d{4})'
-        ]
-        
+            ]
+            
         for pattern in date_patterns:
             match = re.search(pattern, text)
             if match:
@@ -557,17 +717,18 @@ class CignaPolicyScraper:
                 return False
             
             # Prepare data for insertion
+            # Ensure no None values are saved to database
             data = {
-                'title': policy_data.get('title', ''),
-                'policy_url': policy_data.get('policy_url', ''),
-                'monthly_pdf_url': policy_data.get('monthly_pdf_url', ''),
-                'policy_number': self.extract_policy_number(policy_data.get('title', '')),
+                'title': policy_data.get('title') or 'Unknown Policy',
+                'policy_url': policy_data.get('policy_url') or '',
+                'monthly_pdf_url': policy_data.get('monthly_pdf_url') or '',
+                'policy_number': self.extract_policy_number(policy_data.get('title') or ''),
                 'published_date': policy_data.get('published_date'),
                 'effective_date': policy_data.get('effective_date'),
-                'category': policy_data.get('category', 'Policy Update'),
-                'status': policy_data.get('status', ''),
-                'body_content': policy_data.get('body_content', ''),
-                'month_year': policy_data.get('month_year', '')
+                'category': policy_data.get('category') or 'Policy Update',
+                'status': policy_data.get('status') or 'Active',
+                'body_content': policy_data.get('body_content') or '',
+                'month_year': policy_data.get('month_year') or ''
             }
             
             result = self.supabase.table('policy_updates').insert(data).execute()
@@ -592,32 +753,35 @@ class CignaPolicyScraper:
         try:
             # Save medical codes
             for code_data in policy_data.get('medical_codes', []):
-                self.supabase.table('medical_codes').insert({
+                if code_data.get('code'):  # Only save if code exists
+                    self.supabase.table('medical_codes').insert({
                         'policy_update_id': policy_id,
-                    'code': code_data.get('code', ''),
-                    'code_type': code_data.get('code_type', ''),
-                    'description': code_data.get('description', ''),
-                    'is_covered': None
-                }).execute()
+                        'code': code_data.get('code') or '',
+                        'code_type': code_data.get('code_type') or '',
+                        'description': code_data.get('description') or '',
+                        'is_covered': None
+                    }).execute()
             
             # Save referenced documents
             for doc_data in policy_data.get('referenced_documents', []):
-                self.supabase.table('referenced_documents').insert({
+                if doc_data.get('document_title'):  # Only save if title exists
+                    self.supabase.table('referenced_documents').insert({
                             'policy_update_id': policy_id,
-                    'document_title': doc_data.get('document_title', ''),
-                    'document_url': doc_data.get('document_url', ''),
-                    'document_type': doc_data.get('document_type', '')
-                }).execute()
+                        'document_title': doc_data.get('document_title') or '',
+                        'document_url': doc_data.get('document_url') or '',
+                        'document_type': doc_data.get('document_type') or ''
+                    }).execute()
             
             # Save document changes
             for change_data in policy_data.get('document_changes', []):
-                self.supabase.table('document_changes').insert({
+                if change_data.get('change_description'):  # Only save if description exists
+                    self.supabase.table('document_changes').insert({
                         'policy_update_id': policy_id,
-                    'document_title': change_data.get('document_title', ''),
-                    'change_type': change_data.get('change_type', ''),
-                    'change_description': change_data.get('change_description', ''),
-                    'section_affected': change_data.get('section_affected', '')
-                }).execute()
+                        'document_title': change_data.get('document_title') or '',
+                        'change_type': change_data.get('change_type') or '',
+                        'change_description': change_data.get('change_description') or '',
+                        'section_affected': change_data.get('section_affected') or ''
+                    }).execute()
             
         except Exception as e:
             print(f"  ⚠️ Error saving related data: {e}")
