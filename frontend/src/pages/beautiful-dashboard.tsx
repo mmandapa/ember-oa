@@ -66,10 +66,9 @@ export default function BeautifulDashboard() {
   const [loading, setLoading] = useState(true)
   const [scraping, setScraping] = useState(false)
   const [clearing, setClearing] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
   const [selectedPolicy, setSelectedPolicy] = useState<PolicyWithDetails | null>(null)
   const [currentView, setCurrentView] = useState('policies')
-  const [activeFilter, setActiveFilter] = useState('all')
+  const [jobHistory, setJobHistory] = useState<Array<{id: string, startTime: Date, endTime?: Date, status: 'completed' | 'failed' | 'aborted', policiesProcessed: number, totalPolicies: number}>>([])
   const [policyOptions, setPolicyOptions] = useState<PolicyOption[]>([])
   const [selectedOptions, setSelectedOptions] = useState<string[]>([])
   const [loadingOptions, setLoadingOptions] = useState(false)
@@ -86,6 +85,12 @@ export default function BeautifulDashboard() {
   })
   const [isPaused, setIsPaused] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [toast, setToast] = useState<{message: string, type: 'success' | 'error' | 'info'} | null>(null)
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), 5000) // Auto-hide after 5 seconds
+  }
 
   useEffect(() => {
     fetchPoliciesWithDetails()
@@ -136,7 +141,6 @@ export default function BeautifulDashboard() {
         .from('policy_updates')
         .select('*')
         .order('published_date', { ascending: false })
-        .limit(200)
 
       if (policiesError) throw policiesError
 
@@ -258,7 +262,18 @@ export default function BeautifulDashboard() {
         // Show completion message
         const completedCount = status.current || 0
         const totalCount = status.total || 0
-        alert(`🎉 Scraping completed successfully!\n\nProcessed ${completedCount}/${totalCount} policies.`)
+        showToast(`🎉 Scraping completed successfully! Processed ${completedCount}/${totalCount} policies.`, 'success')
+        
+        // Add to job history
+        const jobEntry = {
+          id: taskId,
+          startTime: new Date(),
+          endTime: new Date(),
+          status: 'completed' as const,
+          policiesProcessed: completedCount,
+          totalPolicies: totalCount
+        }
+        setJobHistory(prev => [jobEntry, ...prev.slice(0, 9)]) // Keep last 10 jobs
         
         setScraping(false)
         setRealtimeStats(prev => ({ ...prev, isScraping: false, currentTask: null }))
@@ -266,7 +281,19 @@ export default function BeautifulDashboard() {
         // Final refresh to show all results
         await fetchPoliciesWithDetails(true) // Show loading for final refresh
       } else if (status.state === 'FAILURE') {
-        alert(`❌ Scraper failed: ${status.error || status.status}`)
+        showToast(`❌ Scraper failed: ${status.error || status.status}`, 'error')
+        
+        // Add to job history
+        const jobEntry = {
+          id: taskId,
+          startTime: new Date(),
+          endTime: new Date(),
+          status: 'failed' as const,
+          policiesProcessed: status.current || 0,
+          totalPolicies: status.total || 0
+        }
+        setJobHistory(prev => [jobEntry, ...prev.slice(0, 9)]) // Keep last 10 jobs
+        
         setScraping(false)
         setRealtimeStats(prev => ({ ...prev, isScraping: false, currentTask: null, errors: prev.errors + 1 }))
       } else if (status.state === 'PROGRESS' || status.state === 'PENDING') {
@@ -295,6 +322,14 @@ export default function BeautifulDashboard() {
     }
   }
 
+  const clearScreen = () => {
+    console.log('🧹 Clearing screen...', { currentPoliciesCount: policies.length })
+    setPolicies([])
+    setSelectedPolicy(null)
+    console.log('✅ Screen cleared!')
+    showToast('Screen cleared! Data remains in database.', 'info')
+  }
+
   const clearAllData = async () => {
     if (!confirm('Are you sure you want to delete ALL data? This cannot be undone.')) {
       return
@@ -315,14 +350,14 @@ export default function BeautifulDashboard() {
 
       if (result.success) {
         await fetchPoliciesWithDetails()
-        alert(`All data cleared successfully! ${result.message}`)
+        showToast(`All data cleared successfully! ${result.message}`, 'success')
       } else {
         throw new Error(result.message || 'Failed to clear data')
       }
       
     } catch (error) {
       console.error('Error clearing data:', error)
-      alert(`Failed to clear data: ${error.message}`)
+      showToast(`Failed to clear data: ${error.message}`, 'error')
     } finally {
       setClearing(false)
     }
@@ -374,6 +409,42 @@ export default function BeautifulDashboard() {
     }
   }
 
+  const abortScraper = async () => {
+    if (confirm('Are you sure you want to abort the current scraping job? This will stop all processing immediately.')) {
+      try {
+        const response = await fetch('http://localhost:8000/api/pause-scraper', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        })
+        const result = await response.json()
+        if (result.success) {
+          // Add to job history
+          const jobEntry = {
+            id: `aborted_${Date.now()}`,
+            startTime: new Date(),
+            endTime: new Date(),
+            status: 'aborted' as const,
+            policiesProcessed: realtimeStats.policiesProcessed,
+            totalPolicies: realtimeStats.totalPolicies
+          }
+          setJobHistory(prev => [jobEntry, ...prev.slice(0, 9)]) // Keep last 10 jobs
+          
+          setScraping(false)
+          setIsPaused(false)
+          setRealtimeStats(prev => ({ ...prev, isScraping: false, currentTask: null }))
+          showToast('Scraping job aborted successfully!', 'info')
+        } else {
+          throw new Error(result.message || 'Failed to abort scraper')
+        }
+      } catch (error) {
+        console.error('Error aborting scraper:', error)
+        showToast('Failed to abort scraper: ' + error, 'error')
+      }
+    }
+  }
+
   const getCategoryBadgeClass = (category: string) => {
     switch (category.toLowerCase()) {
       case 'medical policy':
@@ -419,20 +490,6 @@ export default function BeautifulDashboard() {
     }
   }
 
-  const filteredPolicies = policies.filter(policy => {
-    const matchesSearch = policy.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        policy.body_content.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        policy.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        policy.policy_number.includes(searchQuery)
-    
-    const matchesFilter = activeFilter === 'all' || 
-                         (activeFilter === 'recent' && policy.published_date && 
-                          new Date(policy.published_date) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)) ||
-                         (activeFilter === 'medical' && policy.category.toLowerCase().includes('medical')) ||
-                         (activeFilter === 'pharmacy' && policy.category.toLowerCase().includes('pharmacy'))
-    
-    return matchesSearch && matchesFilter
-  })
 
   const stats = {
     totalPolicies: policies.length,
@@ -448,9 +505,6 @@ export default function BeautifulDashboard() {
     setCurrentView(viewName)
   }
 
-  const setFilter = (filterType: string) => {
-    setActiveFilter(filterType)
-  }
 
   const showPolicyDetail = (policy: PolicyWithDetails) => {
     setSelectedPolicy(policy)
@@ -510,7 +564,7 @@ export default function BeautifulDashboard() {
                   ></div>
                 </div>
                 <div className="progress-text">
-                  {realtimeStats.policiesProcessed} / {realtimeStats.totalPolicies} policies
+                  {realtimeStats.policiesProcessed > 0 ? `${realtimeStats.policiesProcessed} / ${realtimeStats.totalPolicies} policies` : 'Processing policies...'}
                 </div>
                 <div className="current-policy">
               <i className="fas fa-file-alt"></i>
@@ -538,6 +592,42 @@ export default function BeautifulDashboard() {
               </div>
             )}
           </div>
+
+          {/* Job History Section */}
+          <div className="stats-section">
+            <div className="stats-title">
+              <i className="fas fa-history"></i>
+              Job History
+            </div>
+            
+            <div className="job-history">
+              {jobHistory.length === 0 ? (
+                <div className="no-history">
+              <i className="fas fa-clock"></i>
+                  <span>No jobs completed yet</span>
+                </div>
+              ) : (
+                <div className="history-list">
+                  {jobHistory.slice(0, 5).map((job) => (
+                    <div key={job.id} className="history-item">
+                      <div className="history-status">
+                        <i className={`fas ${job.status === 'completed' ? 'fa-check-circle' : job.status === 'failed' ? 'fa-times-circle' : 'fa-stop-circle'}`}></i>
+                        <span className={`status-text ${job.status}`}>{job.status}</span>
+                      </div>
+                      <div className="history-details">
+                        <div className="history-time">
+                          {job.startTime.toLocaleTimeString()}
+                        </div>
+                        <div className="history-progress">
+                          {job.policiesProcessed}/{job.totalPolicies} policies
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </nav>
 
         {/* Main Content */}
@@ -546,42 +636,6 @@ export default function BeautifulDashboard() {
             <h1 className="page-title">
               All Policies
             </h1>
-            <div className="search-container">
-              <i className="fas fa-search search-icon"></i>
-              <input 
-                type="text" 
-                className="search-input" 
-                placeholder="Search policies, codes, or changes..." 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-            <div className="filters">
-              <button 
-                className={`filter-btn ${activeFilter === 'all' ? 'active' : ''}`} 
-                onClick={() => setFilter('all')}
-              >
-                All
-              </button>
-              <button 
-                className={`filter-btn ${activeFilter === 'recent' ? 'active' : ''}`} 
-                onClick={() => setFilter('recent')}
-              >
-                Recent
-              </button>
-              <button 
-                className={`filter-btn ${activeFilter === 'medical' ? 'active' : ''}`} 
-                onClick={() => setFilter('medical')}
-              >
-                Medical
-              </button>
-              <button 
-                className={`filter-btn ${activeFilter === 'pharmacy' ? 'active' : ''}`} 
-                onClick={() => setFilter('pharmacy')}
-              >
-                Pharmacy
-              </button>
-            </div>
             
             {/* Monthly PDF Selection Dropdown */}
             <div className="monthly-dropdown-section">
@@ -629,15 +683,15 @@ export default function BeautifulDashboard() {
                   </div>
                   
                   <div className="search-section">
-                    <input
-                      type="text"
+              <input 
+                type="text" 
                       placeholder="🔍 Search policy options..."
                       value={optionFilter}
                       onChange={(e) => setOptionFilter(e.target.value)}
-                      className="search-input"
+                className="search-input" 
                       disabled={scraping || clearing}
-                    />
-                  </div>
+              />
+            </div>
                   
                   <div className="options-container">
                     {loadingOptions ? (
@@ -679,22 +733,38 @@ export default function BeautifulDashboard() {
             </div>
             
             <div className="actions">
-              <button
+              <button 
                 onClick={runScraper}
                 disabled={scraping || clearing}
                 className={`action-btn ${scraping ? 'loading' : 'success'}`}
               >
                 {scraping ? '⏳ Scraping...' : '🚀 Run Scraper'}
               </button>
-              {scraping && (
-                <button
-                  onClick={isPaused ? resumeScraper : pauseScraper}
-                  disabled={clearing}
-                  className={`action-btn ${isPaused ? 'success' : 'warning'}`}
-                >
-                  {isPaused ? '▶️ Resume' : '⏸️ Pause'}
-                </button>
-              )}
+        {scraping && (
+          <>
+              <button 
+              onClick={isPaused ? resumeScraper : pauseScraper}
+              disabled={clearing}
+              className={`action-btn ${isPaused ? 'success' : 'warning'}`}
+              >
+              {isPaused ? '▶️ Resume' : '⏸️ Pause'}
+              </button>
+              <button 
+              onClick={abortScraper}
+              disabled={clearing}
+              className="action-btn danger"
+              >
+              🛑 Abort
+              </button>
+          </>
+        )}
+              <button 
+                onClick={clearScreen}
+                disabled={scraping || clearing}
+                className="action-btn secondary"
+              >
+                🧹 Clear Screen
+              </button>
               <button
                 onClick={clearAllData}
                 disabled={scraping || clearing}
@@ -728,7 +798,7 @@ export default function BeautifulDashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredPolicies.map((policy) => (
+                      {policies.map((policy) => (
                         <tr 
                           key={policy.id} 
                           className="policy-row"
@@ -736,16 +806,13 @@ export default function BeautifulDashboard() {
                         >
                           <td>
                             <div className="policy-title">{policy.title}</div>
-                            {policy.policy_number && (
-                              <div className="policy-number">Policy #{policy.policy_number}</div>
-                            )}
                           </td>
                           <td>
                             <span className={`category-badge ${getCategoryBadgeClass(policy.category)}`}>
-                              {policy.category}
+                              {policy.category && policy.category !== 'N/A' ? policy.category : 'Policy Update'}
                             </span>
                             <div className="status-badge">
-                              {policy.status || 'Active'}
+                              {policy.status && policy.status !== 'N/A' ? policy.status : 'Active'}
                             </div>
                           </td>
                           <td className="date-text">
@@ -1071,6 +1138,81 @@ export default function BeautifulDashboard() {
           display: grid;
           grid-template-columns: 1fr 1fr;
           gap: 12px;
+        }
+
+        /* Job History Styles */
+        .job-history {
+          margin-top: 8px;
+        }
+
+        .no-history {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #9ca3af;
+          font-size: 12px;
+          padding: 12px;
+          text-align: center;
+          justify-content: center;
+        }
+
+        .history-list {
+          max-height: 200px;
+          overflow-y: auto;
+        }
+
+        .history-item {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 8px 12px;
+          border-bottom: 1px solid #f3f4f6;
+          font-size: 12px;
+        }
+
+        .history-item:last-child {
+          border-bottom: none;
+        }
+
+        .history-status {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .history-status i {
+          font-size: 14px;
+        }
+
+        .status-text {
+          font-weight: 500;
+          text-transform: capitalize;
+        }
+
+        .status-text.completed {
+          color: #10b981;
+        }
+
+        .status-text.failed {
+          color: #ef4444;
+        }
+
+        .status-text.aborted {
+          color: #f59e0b;
+        }
+
+        .history-details {
+          text-align: right;
+          color: #6b7280;
+        }
+
+        .history-time {
+          font-weight: 500;
+        }
+
+        .history-progress {
+          font-size: 11px;
+          margin-top: 2px;
         }
 
         .stat-item {
@@ -1482,6 +1624,26 @@ export default function BeautifulDashboard() {
         .action-btn.warning:hover:not(:disabled) {
           background: #d97706;
           border-color: #d97706;
+        }
+
+        .action-btn.danger {
+          background: #dc2626;
+          color: white;
+          border-color: #dc2626;
+        }
+        .action-btn.danger:hover:not(:disabled) {
+          background: #b91c1c;
+          border-color: #b91c1c;
+        }
+
+        .action-btn.secondary {
+          background: #6b7280;
+          color: white;
+          border-color: #6b7280;
+        }
+        .action-btn.secondary:hover:not(:disabled) {
+          background: #4b5563;
+          border-color: #4b5563;
         }
 
         .action-btn:hover:not(.loading) {
@@ -2087,7 +2249,82 @@ export default function BeautifulDashboard() {
             margin-bottom: 16px;
           }
         }
+
+        /* Toast Notification Styles */
+        .toast {
+          position: fixed;
+          top: 20px;
+          right: 20px;
+          z-index: 1000;
+          min-width: 300px;
+          max-width: 500px;
+          border-radius: 8px;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+          animation: slideIn 0.3s ease-out;
+        }
+
+        .toast-success {
+          background: #10b981;
+          color: white;
+        }
+
+        .toast-error {
+          background: #ef4444;
+          color: white;
+        }
+
+        .toast-info {
+          background: #3b82f6;
+          color: white;
+        }
+
+        .toast-content {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 16px 20px;
+        }
+
+        .toast-message {
+          flex: 1;
+          font-weight: 500;
+        }
+
+        .toast-close {
+          background: none;
+          border: none;
+          color: inherit;
+          font-size: 20px;
+          cursor: pointer;
+          margin-left: 12px;
+          opacity: 0.8;
+        }
+
+        .toast-close:hover {
+          opacity: 1;
+        }
+
+        @keyframes slideIn {
+          from {
+            transform: translateX(100%);
+            opacity: 0;
+          }
+          to {
+            transform: translateX(0);
+            opacity: 1;
+          }
+        }
       `}</style>
+
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`toast toast-${toast.type}`}>
+          <div className="toast-content">
+            <span className="toast-message">{toast.message}</span>
+            <button className="toast-close" onClick={() => setToast(null)}>×</button>
+          </div>
+        </div>
+      )}
     </>
   )
 }
