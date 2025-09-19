@@ -10,19 +10,104 @@ import subprocess
 import sys
 import os
 import json
-from scraper import celery_app, scrape_all_policies_task
+from scraper import celery_app, scrape_all_policies_task, scrape_selected_policies_task, CignaPolicyScraper
 
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend communication
 
+@app.route('/api/monthly-pdfs', methods=['GET'])
+def get_monthly_pdfs():
+    """
+    Fetch available monthly PDFs from Cigna
+    """
+    try:
+        scraper = CignaPolicyScraper()
+        monthly_links = scraper.fetch_monthly_links()
+        
+        if not monthly_links:
+            return jsonify({
+                'success': False,
+                'message': 'No monthly PDFs found',
+                'data': []
+            }), 500
+        
+        # Format the data for frontend
+        formatted_links = []
+        for link in monthly_links:
+            formatted_links.append({
+                'value': link['url'],
+                'label': link['month_year'],
+                'url': link['url']
+            })
+        
+        return jsonify({
+            'success': True,
+            'message': f'Found {len(formatted_links)} monthly PDFs',
+            'data': formatted_links
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error fetching monthly PDFs: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e),
+            'data': []
+        }), 500
+
+@app.route('/api/policy-options', methods=['GET'])
+def get_policy_options():
+    """
+    Fetch all available policy options from the main Cigna page
+    """
+    try:
+        scraper = CignaPolicyScraper()
+        policy_options = scraper.fetch_all_policy_options()
+        
+        if not policy_options:
+            return jsonify({
+                'success': False,
+                'message': 'No policy options found',
+                'data': []
+            }), 500
+        
+        # Format the data for frontend
+        formatted_options = []
+        for option in policy_options:
+            formatted_options.append({
+                'value': option['url'],
+                'label': option['title'],
+                'url': option['url'],
+                'category': option['category'],
+                'is_pdf': option['is_pdf']
+            })
+        
+        return jsonify({
+            'success': True,
+            'message': f'Found {len(formatted_options)} policy options',
+            'data': formatted_options
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error fetching policy options: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e),
+            'data': []
+        }), 500
+
 @app.route('/api/scrape-async', methods=['POST'])
 def start_scraping():
     """
-    Start the parallel scraping process
+    Start the parallel scraping process with optional month selection
     Replaces the Next.js API route with Flask
     """
     try:
+        # Get selected options from request body
+        data = request.get_json() or {}
+        selected_options = data.get('selected_options', [])
+        selected_months = data.get('selected_months', [])  # Keep backward compatibility
+        
         print("🏭 Starting complete parallel processing system...")
         
         # Start the complete system (Redis + Workers)
@@ -39,13 +124,25 @@ def start_scraping():
         
         print("✅ Parallel processing system is ready, starting scraping task...")
         
-        # Start the scraping task
-        task = scrape_all_policies_task.delay()
+        # Start the scraping task with selected options or months
+        if selected_options:
+            # For now, we'll use the existing monthly task but pass the selected options
+            # TODO: Create a new task for individual policy options
+            task = scrape_all_policies_task.delay()
+            message = f'Parallel scraping task started for {len(selected_options)} selected policy options'
+        elif selected_months:
+            task = scrape_selected_policies_task.delay(selected_months)
+            message = f'Parallel scraping task started for {len(selected_months)} selected months'
+        else:
+            task = scrape_all_policies_task.delay()
+            message = 'Parallel scraping task started for all available options'
         
         return jsonify({
             'success': True,
-            'message': 'Parallel scraping task started with multiple workers',
-            'task_id': task.id
+            'message': message,
+            'task_id': task.id,
+            'selected_options': selected_options,
+            'selected_months': selected_months
         }), 200
         
     except Exception as e:
@@ -59,7 +156,6 @@ def start_scraping():
 def get_task_status(task_id):
     """
     Get the status of a Celery task
-    Replaces the Next.js API route with Flask
     """
     try:
         task = celery_app.AsyncResult(task_id)

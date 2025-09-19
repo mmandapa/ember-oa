@@ -53,6 +53,14 @@ interface PolicyWithDetails extends PolicyUpdate {
   document_changes: DocumentChange[]
 }
 
+interface PolicyOption {
+  value: string
+  label: string
+  url: string
+  category: string
+  is_pdf: boolean
+}
+
 export default function BeautifulDashboard() {
   const [policies, setPolicies] = useState<PolicyWithDetails[]>([])
   const [loading, setLoading] = useState(true)
@@ -62,10 +70,31 @@ export default function BeautifulDashboard() {
   const [selectedPolicy, setSelectedPolicy] = useState<PolicyWithDetails | null>(null)
   const [currentView, setCurrentView] = useState('dashboard')
   const [activeFilter, setActiveFilter] = useState('all')
+  const [policyOptions, setPolicyOptions] = useState<PolicyOption[]>([])
+  const [selectedOptions, setSelectedOptions] = useState<string[]>([])
+  const [loadingOptions, setLoadingOptions] = useState(false)
+  const [optionFilter, setOptionFilter] = useState('')
+  const [dropdownOpen, setDropdownOpen] = useState(false)
 
   useEffect(() => {
     fetchPoliciesWithDetails()
+    fetchPolicyOptions()
   }, [])
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      if (dropdownOpen && !target.closest('.monthly-dropdown-section')) {
+        setDropdownOpen(false)
+      }
+    }
+
+    if (dropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [dropdownOpen])
 
   const fetchPoliciesWithDetails = async () => {
     try {
@@ -118,16 +147,41 @@ export default function BeautifulDashboard() {
     }
   }
 
+  const fetchPolicyOptions = async () => {
+    try {
+      setLoadingOptions(true)
+      const response = await fetch('http://localhost:8000/api/policy-options')
+      const result = await response.json()
+      
+      if (result.success) {
+        setPolicyOptions(result.data)
+        console.log(`📋 Loaded ${result.data.length} policy options`)
+      } else {
+        console.error('Failed to fetch policy options:', result.message)
+      }
+    } catch (error) {
+      console.error('Error fetching policy options:', error)
+    } finally {
+      setLoadingOptions(false)
+    }
+  }
+
   const runScraper = async () => {
     try {
       setScraping(true)
       
-      // Start the async scraping task via nginx load balancer
-      const response = await fetch('http://localhost/api/scrape-async', {
+      // Prepare request body with selected options
+      const requestBody = {
+        selected_options: selectedOptions
+      }
+      
+      // Start the async scraping task via Flask backend
+      const response = await fetch('http://localhost:8000/api/scrape-async', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        body: JSON.stringify(requestBody)
       })
 
       const result = await response.json()
@@ -148,22 +202,36 @@ export default function BeautifulDashboard() {
 
   const pollTaskStatus = async (taskId: string) => {
     try {
-      const response = await fetch(`http://localhost/api/task-status/${taskId}`)
+      const response = await fetch(`http://localhost:8000/api/task-status/${taskId}`)
       const status = await response.json()
 
-      if (status.status === 'SUCCESS') {
+      // Enhanced progress tracking
+      if (status.state === 'COMPLETED' || status.celery_state === 'SUCCESS') {
         alert('Scraper completed successfully!')
         setScraping(false)
         // Refresh the policies list
         await fetchPoliciesWithDetails()
-      } else if (status.status === 'FAILURE') {
-        alert(`Scraper failed: ${status.info}`)
+      } else if (status.state === 'FAILED' || status.celery_state === 'FAILURE') {
+        alert(`Scraper failed: ${status.error || status.status}`)
         setScraping(false)
-      } else if (status.status === 'PROGRESS') {
-        // Update progress (you could show this in the UI)
-        console.log(`Progress: ${status.info?.current || 0}/${status.info?.total || 0}`)
-        // Continue polling
-        setTimeout(() => pollTaskStatus(taskId), 2000)
+      } else if (status.state === 'PROCESSING' || status.celery_state === 'PROGRESS') {
+        // Show enhanced progress information
+        const progressPercent = status.progress_percent || 0
+        const current = status.current || 0
+        const total = status.total || 0
+        const currentItem = status.status || 'Processing...'
+        
+        console.log(`📊 Progress: ${progressPercent}% (${current}/${total}) - ${currentItem}`)
+        
+        // Show estimated completion time if available
+        if (status.estimated_completion) {
+          const eta = new Date(status.estimated_completion * 1000).toLocaleTimeString()
+          console.log(`⏰ Estimated completion: ${eta}`)
+        }
+        
+        // Continue polling with adaptive interval
+        const pollInterval = status.should_throttle ? 5000 : 2000 // Slower polling if throttled
+        setTimeout(() => pollTaskStatus(taskId), pollInterval)
       } else {
         // Still processing, continue polling
         setTimeout(() => pollTaskStatus(taskId), 2000)
@@ -183,8 +251,8 @@ export default function BeautifulDashboard() {
     try {
       setClearing(true)
       
-      // Use Flask API to clear data
-      const response = await fetch('http://localhost/api/clear-data', {
+        // Use Flask API to clear data
+        const response = await fetch('http://localhost:8000/api/clear-data', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -426,6 +494,97 @@ export default function BeautifulDashboard() {
                 Pharmacy
               </button>
             </div>
+            
+            {/* Monthly PDF Selection Dropdown */}
+            <div className="monthly-dropdown-section">
+              <div className="dropdown-trigger" onClick={() => setDropdownOpen(!dropdownOpen)}>
+                <div className="trigger-content">
+                  <span className="trigger-icon">📅</span>
+                  <span className="trigger-text">
+                    {selectedOptions.length === 0 
+                      ? 'Select Policy Options to Scrape' 
+                      : `${selectedOptions.length} option${selectedOptions.length === 1 ? '' : 's'} selected`
+                    }
+                  </span>
+                  <span className="trigger-arrow">{dropdownOpen ? '▲' : '▼'}</span>
+                </div>
+              </div>
+              
+              {dropdownOpen && (
+                <div className="dropdown-content">
+                  <div className="dropdown-header">
+                  <div className="header-info">
+                    <span className="header-title">Policy Options ({policyOptions.length})</span>
+                    <span className="header-subtitle">
+                      {selectedOptions.length === 0 ? 'All options will be scraped' : `${selectedOptions.length} selected`}
+                    </span>
+                  </div>
+                  <div className="header-actions">
+                    <button
+                      onClick={() => setSelectedOptions([])}
+                      className="mini-btn"
+                      disabled={scraping || clearing || selectedOptions.length === 0}
+                    >
+                      Clear
+                    </button>
+                    <button
+                      onClick={() => setSelectedOptions(policyOptions.map(option => option.value))}
+                      className="mini-btn"
+                      disabled={scraping || clearing}
+                    >
+                      All
+                    </button>
+                  </div>
+                  </div>
+                  
+                  <div className="search-section">
+                    <input
+                      type="text"
+                      placeholder="🔍 Search policy options..."
+                      value={optionFilter}
+                      onChange={(e) => setOptionFilter(e.target.value)}
+                      className="search-input"
+                      disabled={scraping || clearing}
+                    />
+                  </div>
+                  
+                  <div className="options-container">
+                    {loadingOptions ? (
+                      <div className="loading-state">🔄 Loading...</div>
+                    ) : (
+                      policyOptions
+                        .filter(option => 
+                          option.label.toLowerCase().includes(optionFilter.toLowerCase()) ||
+                          option.category.toLowerCase().includes(optionFilter.toLowerCase())
+                        )
+                        .map((option) => (
+                          <label key={option.value} className="option-item">
+                            <input
+                              type="checkbox"
+                              value={option.value}
+                              checked={selectedOptions.includes(option.value)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedOptions([...selectedOptions, option.value])
+                                } else {
+                                  setSelectedOptions(selectedOptions.filter(opt => opt !== option.value))
+                                }
+                              }}
+                              disabled={scraping || clearing}
+                              className="option-checkbox"
+                            />
+                            <span className="option-label">
+                              <span className="option-title">{option.label}</span>
+                              <span className="option-category">({option.category})</span>
+                            </span>
+                          </label>
+                        ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            
             <div className="actions">
               <button
                 onClick={runScraper}
@@ -447,32 +606,35 @@ export default function BeautifulDashboard() {
           <div className="content-area">
             {/* Dashboard View */}
             {currentView === 'dashboard' && (
-              <div className="stats-grid">
-                <div className="stat-card">
-                  <div className="stat-number">{stats.totalPolicies}</div>
-                  <div className="stat-label">Total Policies Scraped</div>
+              <>
+                <div className="stats-grid">
+                  <div className="stat-card">
+                    <div className="stat-number">{stats.totalPolicies}</div>
+                    <div className="stat-label">Total Policies Scraped</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-number">{stats.recentUpdates}</div>
+                    <div className="stat-label">Updated This Week</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-number">{stats.totalCodes}</div>
+                    <div className="stat-label">Medical Codes Extracted</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-number">{stats.totalChanges}</div>
+                    <div className="stat-label">Document Changes</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-number">{stats.totalDocuments}</div>
+                    <div className="stat-label">Referenced Documents</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-number">{stats.categories}</div>
+                    <div className="stat-label">Policy Categories</div>
+                  </div>
                 </div>
-                <div className="stat-card">
-                  <div className="stat-number">{stats.recentUpdates}</div>
-                  <div className="stat-label">Updated This Week</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-number">{stats.totalCodes}</div>
-                  <div className="stat-label">Medical Codes Extracted</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-number">{stats.totalChanges}</div>
-                  <div className="stat-label">Document Changes</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-number">{stats.totalDocuments}</div>
-                  <div className="stat-label">Referenced Documents</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-number">{stats.categories}</div>
-                  <div className="stat-label">Policy Categories</div>
-                </div>
-              </div>
+
+              </>
             )}
 
             {/* Policies List */}
@@ -584,7 +746,16 @@ export default function BeautifulDashboard() {
         {selectedPolicy && (
           <aside className="detail-panel active">
             <div className="detail-header">
-              <div className="detail-title">{selectedPolicy.title}</div>
+              <div className="detail-title-section">
+                <div className="detail-title">{selectedPolicy.title}</div>
+                <button 
+                  className="close-button" 
+                  onClick={() => setSelectedPolicy(null)}
+                  aria-label="Close panel"
+                >
+                  <i className="fas fa-times"></i>
+                </button>
+              </div>
               <div className="detail-meta">
                 <div className="meta-item">
                   <i className="fas fa-calendar"></i>
@@ -872,6 +1043,230 @@ export default function BeautifulDashboard() {
           background: #0066cc;
           color: white;
           border-color: #0066cc;
+        }
+
+        .monthly-dropdown-section {
+          position: relative;
+          margin: 16px 0;
+        }
+
+        .dropdown-trigger {
+          background: white;
+          border: 1px solid #d1d5db;
+          border-radius: 8px;
+          padding: 12px 16px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .dropdown-trigger:hover {
+          border-color: #3b82f6;
+          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .trigger-content {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .trigger-icon {
+          font-size: 18px;
+        }
+
+        .trigger-text {
+          flex: 1;
+          font-size: 14px;
+          font-weight: 500;
+          color: #374151;
+        }
+
+        .trigger-arrow {
+          font-size: 12px;
+          color: #6b7280;
+          transition: transform 0.2s ease;
+        }
+
+        .dropdown-content {
+          position: absolute;
+          top: 100%;
+          left: 0;
+          right: 0;
+          background: white;
+          border: 1px solid #d1d5db;
+          border-radius: 8px;
+          box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+          z-index: 1000;
+          margin-top: 4px;
+          max-height: 400px;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+        }
+
+        .dropdown-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 16px;
+          border-bottom: 1px solid #e5e7eb;
+          background: #f9fafb;
+        }
+
+        .header-info {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .header-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: #1f2937;
+        }
+
+        .header-subtitle {
+          font-size: 12px;
+          color: #6b7280;
+        }
+
+        .header-actions {
+          display: flex;
+          gap: 8px;
+        }
+
+        .mini-btn {
+          padding: 4px 8px;
+          font-size: 12px;
+          border: 1px solid #d1d5db;
+          border-radius: 4px;
+          background: white;
+          color: #374151;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        .mini-btn:hover:not(:disabled) {
+          background: #f3f4f6;
+          border-color: #9ca3af;
+        }
+
+        .mini-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .search-section {
+          padding: 12px 16px;
+          border-bottom: 1px solid #e5e7eb;
+        }
+
+        .search-input {
+          width: 100%;
+          padding: 8px 12px;
+          border: 1px solid #d1d5db;
+          border-radius: 6px;
+          font-size: 14px;
+          background: white;
+          color: #374151;
+        }
+
+        .search-input:focus {
+          outline: none;
+          border-color: #3b82f6;
+          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .search-input:disabled {
+          background: #f3f4f6;
+          color: #9ca3af;
+          cursor: not-allowed;
+        }
+
+        .options-container {
+          max-height: 250px;
+          overflow-y: auto;
+          padding: 8px;
+        }
+
+        .loading-state {
+          text-align: center;
+          padding: 20px;
+          color: #6b7280;
+          font-size: 14px;
+        }
+
+        .option-item {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 12px;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background-color 0.2s ease;
+        }
+
+        .option-item:hover {
+          background: #f3f4f6;
+        }
+
+        .option-checkbox {
+          width: 16px;
+          height: 16px;
+          accent-color: #3b82f6;
+          cursor: pointer;
+        }
+
+        .option-checkbox:disabled {
+          cursor: not-allowed;
+          opacity: 0.5;
+        }
+
+        .option-label {
+          font-size: 14px;
+          color: #374151;
+          cursor: pointer;
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .option-title {
+          font-weight: 500;
+          color: #1f2937;
+        }
+
+        .option-category {
+          font-size: 12px;
+          color: #6b7280;
+          font-style: italic;
+        }
+
+        .option-item:has(.option-checkbox:disabled) .option-label {
+          color: #9ca3af;
+          cursor: not-allowed;
+        }
+
+        .option-item:has(.option-checkbox:disabled) .option-title {
+          color: #9ca3af;
+        }
+
+        .option-item:has(.option-checkbox:disabled) .option-category {
+          color: #9ca3af;
+        }
+
+
+        .action-btn.secondary {
+          background: #f3f4f6;
+          color: #374151;
+          border-color: #d1d5db;
+        }
+
+        .action-btn.secondary:hover:not(:disabled) {
+          background: #e5e7eb;
+          border-color: #9ca3af;
         }
 
         .actions {
@@ -1192,12 +1587,45 @@ export default function BeautifulDashboard() {
           border-bottom: 1px solid #e5e7eb;
         }
 
+        .detail-title-section {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          margin-bottom: 8px;
+        }
+
         .detail-title {
           font-size: 18px;
           font-weight: 600;
           color: #1a1a1a;
-          margin-bottom: 8px;
           line-height: 1.4;
+          flex: 1;
+          margin-right: 12px;
+        }
+
+        .close-button {
+          background: none;
+          border: none;
+          color: #6b7280;
+          cursor: pointer;
+          padding: 4px;
+          border-radius: 4px;
+          transition: all 0.2s ease;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 28px;
+          height: 28px;
+          flex-shrink: 0;
+        }
+
+        .close-button:hover {
+          background-color: #f3f4f6;
+          color: #374151;
+        }
+
+        .close-button:active {
+          background-color: #e5e7eb;
         }
 
         .detail-meta {
@@ -1404,6 +1832,7 @@ export default function BeautifulDashboard() {
           font-weight: 500;
         }
 
+
         .loading {
           display: flex;
           align-items: center;
@@ -1446,6 +1875,31 @@ export default function BeautifulDashboard() {
             flex-wrap: wrap;
           }
           
+          .monthly-dropdown-section {
+            margin: 12px 0;
+          }
+
+          .dropdown-trigger {
+            padding: 10px 12px;
+          }
+
+          .trigger-text {
+            font-size: 13px;
+          }
+
+          .dropdown-content {
+            max-height: 350px;
+          }
+
+          .options-container {
+            max-height: 200px;
+          }
+
+          .selection-actions {
+            flex-direction: row;
+            justify-content: center;
+          }
+
           .actions {
             order: -1;
             width: 100%;

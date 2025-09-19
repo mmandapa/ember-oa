@@ -73,6 +73,73 @@ class CignaPolicyScraper:
         except Exception as e:
             print(f"❌ Error fetching monthly links: {e}")
             return []
+
+    def fetch_all_policy_options(self):
+        """Fetch all policy options - both monthly PDFs and individual policies from recent PDFs"""
+        try:
+            # First, get monthly PDFs (these are the main policy update documents)
+            monthly_links = self.fetch_monthly_links()
+            
+            policy_options = []
+            
+            # Add monthly PDFs as options
+            for link in monthly_links:
+                policy_options.append({
+                    'url': link['url'],
+                    'title': link['month_year'],
+                    'category': 'monthly_updates',
+                    'is_pdf': True
+                })
+            
+            # For individual policies, we need to extract them from the monthly PDFs
+            # This is more complex, so let's start with just the monthly PDFs
+            # Individual policy extraction would require downloading and parsing each PDF
+            
+            print(f"📋 Found {len(policy_options)} policy options (monthly PDFs)")
+            return policy_options
+            
+        except Exception as e:
+            print(f"❌ Error fetching policy options: {e}")
+            return []
+    
+    def is_valid_policy_url(self, url):
+        """Validate if a URL looks like a valid policy URL"""
+        try:
+            # Check if it's a valid URL format
+            if not url or len(url) < 20:
+                return False
+            
+            # Must contain policy-related keywords
+            policy_keywords = ['policy', 'coverage', 'medical', 'pharmacy', 'behavioral', 'clinical']
+            if not any(keyword in url.lower() for keyword in policy_keywords):
+                return False
+            
+            # Skip URLs with obvious issues
+            skip_patterns = [
+                'mm_Future',  # Future policies that don't exist yet
+                'coveragepositioncriteria_.pdf',  # Empty policy names
+                'mm_1805_coveragepositioncriteria_.pdf',  # Specific broken ones
+            ]
+            
+            if any(pattern in url for pattern in skip_patterns):
+                return False
+            
+            # Must be from Cigna domain
+            if 'static.cigna.com' not in url and 'cigna.com' not in url:
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
+    
+    def test_url_accessibility(self, url):
+        """Test if a URL is accessible (quick HEAD request)"""
+        try:
+            response = requests.head(url, timeout=5, allow_redirects=True)
+            return response.status_code == 200
+        except Exception:
+            return False
     
     def extract_policy_links_from_pdf(self, pdf_content, month_year):
         """Extract policy links and comments from monthly PDF using pdfplumber"""
@@ -493,50 +560,78 @@ class CignaPolicyScraper:
         """Extract medical codes using regex patterns"""
         codes = []
         
-        # CPT codes (5 digits)
-        cpt_pattern = r'\b(\d{5})\b'
-        cpt_matches = re.finditer(cpt_pattern, text)
-        for match in cpt_matches:
-            code = match.group(1)
-            # Get context around the code
-            start = max(0, match.start() - 50)
-            end = min(len(text), match.end() + 50)
-            context = text[start:end]
-            codes.append({
-                'code': code,
-                'code_type': 'CPT',
-                'description': self.extract_code_description(context, code)
-            })
+        # CPT codes (5 digits) - more flexible pattern
+        cpt_patterns = [
+            r'\b(\d{5})\b',  # Standard 5-digit codes
+            r'CPT[:\s]*(\d{5})',  # CPT: 12345 format
+            r'Code[:\s]*(\d{5})',  # Code: 12345 format
+        ]
         
-        # HCPCS codes (1 letter + 4 digits)
-        hcpcs_pattern = r'\b([A-Z]\d{4})\b'
-        hcpcs_matches = re.finditer(hcpcs_pattern, text)
-        for match in hcpcs_matches:
-            code = match.group(1)
-            start = max(0, match.start() - 50)
-            end = min(len(text), match.end() + 50)
-            context = text[start:end]
-            codes.append({
-                'code': code,
-                'code_type': 'HCPCS',
-                'description': self.extract_code_description(context, code)
-            })
+        for pattern in cpt_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                code = match.group(1)
+                # Get context around the code
+                start = max(0, match.start() - 100)
+                end = min(len(text), match.end() + 100)
+                context = text[start:end]
+                codes.append({
+                    'code': code,
+                    'code_type': 'CPT',
+                    'description': self.extract_code_description(context, code)
+                })
         
-        # ICD-10 codes (letter + digits + optional decimal)
-        icd10_pattern = r'\b([A-TV-Z]\d{2}(?:\.\d{1,4})?)\b'
-        icd10_matches = re.finditer(icd10_pattern, text)
-        for match in icd10_matches:
-            code = match.group(1)
-            start = max(0, match.start() - 50)
-            end = min(len(text), match.end() + 50)
-            context = text[start:end]
-            codes.append({
-                'code': code,
-                'code_type': 'ICD-10',
-                'description': self.extract_code_description(context, code)
-            })
+        # HCPCS codes (1 letter + 4 digits) - more flexible pattern
+        hcpcs_patterns = [
+            r'\b([A-Z]\d{4})\b',  # Standard HCPCS format
+            r'HCPCS[:\s]*([A-Z]\d{4})',  # HCPCS: A1234 format
+            r'Code[:\s]*([A-Z]\d{4})',  # Code: A1234 format
+        ]
         
-        return codes
+        for pattern in hcpcs_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                code = match.group(1)
+                start = max(0, match.start() - 100)
+                end = min(len(text), match.end() + 100)
+                context = text[start:end]
+                codes.append({
+                    'code': code,
+                    'code_type': 'HCPCS',
+                    'description': self.extract_code_description(context, code)
+                })
+        
+        # ICD-10 codes (letter + digits + optional decimal) - more flexible pattern
+        icd10_patterns = [
+            r'\b([A-TV-Z]\d{2}(?:\.\d{1,4})?)\b',  # Standard ICD-10 format
+            r'ICD-10[:\s]*([A-TV-Z]\d{2}(?:\.\d{1,4})?)',  # ICD-10: A12.34 format
+            r'Diagnosis[:\s]*([A-TV-Z]\d{2}(?:\.\d{1,4})?)',  # Diagnosis: A12.34 format
+        ]
+        
+        for pattern in icd10_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                code = match.group(1)
+                start = max(0, match.start() - 100)
+                end = min(len(text), match.end() + 100)
+                context = text[start:end]
+                codes.append({
+                    'code': code,
+                    'code_type': 'ICD-10',
+                    'description': self.extract_code_description(context, code)
+                })
+        
+        # Remove duplicates based on code
+        seen_codes = set()
+        unique_codes = []
+        for code_data in codes:
+            code_key = f"{code_data['code_type']}_{code_data['code']}"
+            if code_key not in seen_codes:
+                seen_codes.add(code_key)
+                unique_codes.append(code_data)
+        
+        print(f"    🔍 Found {len(unique_codes)} unique medical codes")
+        return unique_codes
 
     def extract_code_description(self, context, code):
         """Extract description for a medical code from context"""
@@ -564,7 +659,9 @@ class CignaPolicyScraper:
             r'References?\s*[:\-]?\s*\n(.*?)(?=\n\n[A-Z][a-z]+:|$)',
             r'Bibliography\s*[:\-]?\s*\n(.*?)(?=\n\n[A-Z][a-z]+:|$)',
             r'Related\s+Documents?\s*[:\-]?\s*\n(.*?)(?=\n\n[A-Z][a-z]+:|$)',
-            r'Supporting\s+Documentation\s*[:\-]?\s*\n(.*?)(?=\n\n[A-Z][a-z]+:|$)'
+            r'Supporting\s+Documentation\s*[:\-]?\s*\n(.*?)(?=\n\n[A-Z][a-z]+:|$)',
+            r'References?\s*[:\-]?\s*(.*?)(?=\n[A-Z][a-z]+:|$)',
+            r'Bibliography\s*[:\-]?\s*(.*?)(?=\n[A-Z][a-z]+:|$)',
         ]
         
         references_content = ""
@@ -575,9 +672,10 @@ class CignaPolicyScraper:
                 print(f"    📋 Found References section")
                 break
         
+        # If no formal References section, look for policy references throughout the text
         if not references_content:
-            print(f"    📋 No References section found")
-            return documents
+            print(f"    📋 No formal References section found, searching entire text for policy references")
+            references_content = text
         
         # Extract different types of references from the References section
         # 1. Policy references (mm_, ip_, ph_)
@@ -703,7 +801,10 @@ class CignaPolicyScraper:
         changes = []
         
         if not comments:
+            print(f"    📝 No comments provided for document changes")
             return changes
+        
+        print(f"    📝 Processing comments: {comments[:100]}...")
         
         # Split comments by semicolon and process each
         comment_parts = comments.split(';')
@@ -715,11 +816,11 @@ class CignaPolicyScraper:
             
             # Determine change type
             change_type = "Modification"
-            if any(word in part.lower() for word in ['new', 'added', 'added']):
+            if any(word in part.lower() for word in ['new', 'added', 'addition']):
                 change_type = "Addition"
-            elif any(word in part.lower() for word in ['removed', 'deleted', 'retired']):
+            elif any(word in part.lower() for word in ['removed', 'deleted', 'retired', 'discontinued']):
                 change_type = "Removal"
-            elif any(word in part.lower() for word in ['updated', 'modified', 'changed']):
+            elif any(word in part.lower() for word in ['updated', 'modified', 'changed', 'revised']):
                 change_type = "Modification"
             
             changes.append({
@@ -729,6 +830,7 @@ class CignaPolicyScraper:
                 'section_affected': 'General'
             })
         
+        print(f"    📝 Extracted {len(changes)} document changes")
         return changes
 
     def analyze_policy_with_spacy(self, policy_text, policy_url, month_year, comments=''):
@@ -738,6 +840,11 @@ class CignaPolicyScraper:
             medical_codes = self.extract_medical_codes(policy_text)
             referenced_documents = self.extract_referenced_documents(policy_text)
             document_changes = self.extract_document_changes(comments)
+            
+            # Debug output
+            print(f"    📊 Extracted {len(medical_codes)} medical codes")
+            print(f"    📚 Extracted {len(referenced_documents)} referenced documents")
+            print(f"    📝 Extracted {len(document_changes)} document changes")
             
             # Extract basic policy information
             policy_data = {
@@ -995,7 +1102,9 @@ class CignaPolicyScraper:
         """Save related data (medical codes, referenced documents, document changes)"""
         try:
             # Save medical codes
-            for code_data in policy_data.get('medical_codes', []):
+            medical_codes = policy_data.get('medical_codes', [])
+            print(f"  💾 Saving {len(medical_codes)} medical codes...")
+            for code_data in medical_codes:
                 if code_data.get('code'):  # Only save if code exists
                     self.supabase.table('medical_codes').insert({
                         'policy_update_id': policy_id,
@@ -1004,9 +1113,12 @@ class CignaPolicyScraper:
                         'description': code_data.get('description') or '',
                         'is_covered': None
                     }).execute()
+                    print(f"    ✅ Saved medical code: {code_data.get('code')}")
             
             # Save referenced documents
-            for doc_data in policy_data.get('referenced_documents', []):
+            referenced_docs = policy_data.get('referenced_documents', [])
+            print(f"  💾 Saving {len(referenced_docs)} referenced documents...")
+            for doc_data in referenced_docs:
                 if doc_data.get('document_title'):  # Only save if title exists
                     self.supabase.table('referenced_documents').insert({
                             'policy_update_id': policy_id,
@@ -1014,9 +1126,12 @@ class CignaPolicyScraper:
                         'document_url': doc_data.get('document_url') or '',
                         'document_type': doc_data.get('document_type') or ''
                     }).execute()
+                    print(f"    ✅ Saved referenced document: {doc_data.get('document_title')}")
             
             # Save document changes
-            for change_data in policy_data.get('document_changes', []):
+            document_changes = policy_data.get('document_changes', [])
+            print(f"  💾 Saving {len(document_changes)} document changes...")
+            for change_data in document_changes:
                 if change_data.get('change_description'):  # Only save if description exists
                     self.supabase.table('document_changes').insert({
                         'policy_update_id': policy_id,
@@ -1025,6 +1140,7 @@ class CignaPolicyScraper:
                         'change_description': change_data.get('change_description') or '',
                         'section_affected': change_data.get('section_affected') or ''
                     }).execute()
+                    print(f"    ✅ Saved document change: {change_data.get('change_description')[:50]}...")
             
         except Exception as e:
             print(f"  ⚠️ Error saving related data: {e}")
@@ -1077,9 +1193,14 @@ celery_app.conf.result_serializer = 'json'
 celery_app.conf.timezone = 'UTC'
 celery_app.conf.enable_utc = True
 
+# Optimize for lag prevention
+celery_app.conf.worker_prefetch_multiplier = 1  # Process one task at a time
+celery_app.conf.worker_max_tasks_per_child = 5  # Restart workers frequently
+celery_app.conf.task_acks_late = True  # Acknowledge tasks only after completion
+
 @celery_app.task(bind=True)
 def scrape_all_policies_task(self):
-    """Celery task to scrape all policies in parallel"""
+    """Celery task to scrape all policies with lag prevention"""
     scraper = CignaPolicyScraper()
     monthly_links = scraper.fetch_monthly_links()
     
@@ -1094,14 +1215,84 @@ def scrape_all_policies_task(self):
         meta={
             'current': 0,
             'total': total_links,
-            'status': f'Starting parallel processing of {total_links} PDFs...',
+            'status': f'Starting processing of {total_links} PDFs...',
             'pdf_url': 'N/A'
         }
     )
     
-    # Create individual tasks for each PDF and dispatch them
+    # Process PDFs in smaller batches to prevent lag
+    batch_size = 3  # Process only 3 PDFs at a time
+    processed_count = 0
+    
+    for i in range(0, len(monthly_links), batch_size):
+        batch = monthly_links[i:i + batch_size]
+        
+        # Update progress
+        self.update_state(
+            state='PROGRESS',
+            meta={
+                'current': processed_count,
+                'total': total_links,
+                'status': f'Processing batch {i//batch_size + 1} of {(len(monthly_links) + batch_size - 1)//batch_size}...',
+                'pdf_url': batch[0]['url'] if batch else 'N/A'
+            }
+        )
+        
+        # Process batch sequentially to prevent resource overload
+        for link in batch:
+            try:
+                if scraper.scrape_policy_url(link['url'], link['month_year']):
+                    processed_count += 1
+                
+                # Small delay to prevent overwhelming the system
+                import time
+                time.sleep(1)
+                
+            except Exception as e:
+                print(f"❌ Error processing {link['month_year']}: {e}")
+                continue
+    
+    return {
+        'status': 'completed',
+        'total_pdfs': total_links,
+        'processed': processed_count,
+        'message': f'Completed processing {processed_count}/{total_links} PDFs'
+    }
+
+@celery_app.task(bind=True)
+def scrape_selected_policies_task(self, selected_month_urls):
+    """Celery task to scrape only selected monthly policies in parallel"""
+    scraper = CignaPolicyScraper()
+    monthly_links = scraper.fetch_monthly_links()
+    
+    if not monthly_links:
+        return {'status': 'completed', 'total_pdfs': 0, 'results': []}
+    
+    # Filter monthly links to only include selected ones
+    selected_links = []
+    for link in monthly_links:
+        if link['url'] in selected_month_urls:
+            selected_links.append(link)
+    
+    if not selected_links:
+        return {'status': 'completed', 'total_pdfs': 0, 'results': [], 'message': 'No matching monthly PDFs found for selection'}
+    
+    total_links = len(selected_links)
+    
+    # Update initial progress
+    self.update_state(
+        state='PROGRESS',
+        meta={
+            'current': 0,
+            'total': total_links,
+            'status': f'Starting parallel processing of {total_links} selected PDFs...',
+            'pdf_url': 'N/A'
+        }
+    )
+    
+    # Create individual tasks for each selected PDF and dispatch them
     from celery import group
-    job = group(process_single_pdf.s(link['url'], link['month_year']) for link in monthly_links)
+    job = group(process_single_pdf.s(link['url'], link['month_year']) for link in selected_links)
     
     # Execute all tasks in parallel (don't wait for results)
     result = job.apply_async()
@@ -1111,12 +1302,13 @@ def scrape_all_policies_task(self):
         'status': 'dispatched',
         'total_pdfs': total_links,
         'group_id': result.id,
-        'message': f'Dispatched {total_links} PDF processing tasks in parallel'
+        'message': f'Dispatched {total_links} selected PDF processing tasks in parallel',
+        'selected_months': [link['month_year'] for link in selected_links]
     }
 
 @celery_app.task(bind=True)
 def process_single_pdf(self, pdf_url, month_year):
-    """Process a single PDF in parallel"""
+    """Process a single PDF with lag prevention"""
     try:
         scraper = CignaPolicyScraper()
         
@@ -1129,8 +1321,8 @@ def process_single_pdf(self, pdf_url, month_year):
             }
         )
         
-        # Use parallel processing for individual policies within the PDF
-        if scraper.scrape_policy_url_parallel(pdf_url, month_year):
+        # Use regular processing (not parallel) to prevent resource overload
+        if scraper.scrape_policy_url(pdf_url, month_year):
             return {
                 'status': 'success',
                 'pdf_url': pdf_url,
