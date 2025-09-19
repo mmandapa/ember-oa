@@ -1193,10 +1193,13 @@ celery_app.conf.result_serializer = 'json'
 celery_app.conf.timezone = 'UTC'
 celery_app.conf.enable_utc = True
 
-# Optimize for lag prevention
-celery_app.conf.worker_prefetch_multiplier = 1  # Process one task at a time
-celery_app.conf.worker_max_tasks_per_child = 5  # Restart workers frequently
+# Optimize for faster processing with multiple workers
+celery_app.conf.worker_prefetch_multiplier = 1  # Process one task at a time per worker
+celery_app.conf.worker_max_tasks_per_child = 10  # Allow more tasks per worker
 celery_app.conf.task_acks_late = True  # Acknowledge tasks only after completion
+celery_app.conf.worker_max_memory_per_child = 500000  # Increase memory limit (500MB)
+celery_app.conf.task_time_limit = 1800  # 30 minute timeout per task
+celery_app.conf.worker_concurrency = 4  # Allow 4 concurrent workers
 
 @celery_app.task(bind=True)
 def scrape_all_policies_task(self):
@@ -1220,48 +1223,29 @@ def scrape_all_policies_task(self):
         }
     )
     
-    # Process PDFs in smaller batches to prevent lag
-    batch_size = 3  # Process only 3 PDFs at a time
-    processed_count = 0
+    # Process PDFs in parallel for faster real-time updates
+    # Create individual tasks for each PDF and dispatch them in parallel
+    from celery import group
+    job = group(process_single_pdf.s(link['url'], link['month_year']) for link in monthly_links)
     
-    for i in range(0, len(monthly_links), batch_size):
-        batch = monthly_links[i:i + batch_size]
-        
-        # Update progress
-        self.update_state(
-            state='PROGRESS',
-            meta={
-                'current': processed_count,
-                'total': total_links,
-                'status': f'Processing batch {i//batch_size + 1} of {(len(monthly_links) + batch_size - 1)//batch_size}...',
-                'pdf_url': batch[0]['url'] if batch else 'N/A'
-            }
-        )
-        
-        # Process batch sequentially to prevent resource overload
-        for link in batch:
-            try:
-                if scraper.scrape_policy_url(link['url'], link['month_year']):
-                    processed_count += 1
-                
-                # Small delay to prevent overwhelming the system
-                import time
-                time.sleep(1)
-                
-            except Exception as e:
-                print(f"❌ Error processing {link['month_year']}: {e}")
-                continue
+    # Execute all tasks in parallel (don't wait for results)
+    result = job.apply_async()
     
+    # Return the group result ID for monitoring
     return {
-        'status': 'completed',
+        'status': 'dispatched',
         'total_pdfs': total_links,
-        'processed': processed_count,
-        'message': f'Completed processing {processed_count}/{total_links} PDFs'
+        'group_id': result.id,
+        'message': f'Dispatched {total_links} PDF processing tasks in parallel',
+        'monthly_links': [link['month_year'] for link in monthly_links]
     }
 
 @celery_app.task(bind=True)
-def scrape_selected_policies_task(self, selected_month_urls):
+def scrape_selected_policies_task(self, selected_urls):
     """Celery task to scrape only selected monthly policies in parallel"""
+    print(f"🎯 Selected URLs received: {len(selected_urls)} options")
+    print(f"📋 First few URLs: {selected_urls[:3] if selected_urls else 'None'}")
+    
     scraper = CignaPolicyScraper()
     monthly_links = scraper.fetch_monthly_links()
     
@@ -1271,8 +1255,10 @@ def scrape_selected_policies_task(self, selected_month_urls):
     # Filter monthly links to only include selected ones
     selected_links = []
     for link in monthly_links:
-        if link['url'] in selected_month_urls:
+        if link['url'] in selected_urls:
             selected_links.append(link)
+    
+    print(f"✅ Filtered to {len(selected_links)} matching monthly PDFs")
     
     if not selected_links:
         return {'status': 'completed', 'total_pdfs': 0, 'results': [], 'message': 'No matching monthly PDFs found for selection'}

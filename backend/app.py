@@ -108,34 +108,44 @@ def start_scraping():
         selected_options = data.get('selected_options', [])
         selected_months = data.get('selected_months', [])  # Keep backward compatibility
         
-        print("🏭 Starting complete parallel processing system...")
+        print("🏭 Starting scraping process...")
+        print(f"📋 Received selected_options: {len(selected_options)} items")
+        print(f"📋 Received selected_months: {len(selected_months)} items")
+        if selected_options:
+            print(f"🎯 First few selected options: {selected_options[:3]}")
         
-        # Start the complete system (Redis + Workers)
-        start_everything_path = os.path.join(os.path.dirname(__file__), 'start_everything.py')
-        result = subprocess.run([sys.executable, start_everything_path], 
-                              capture_output=True, text=True, cwd=os.path.dirname(__file__))
-        
-        if result.returncode != 0:
+        # Check if Celery workers are running
+        try:
+            inspect = celery_app.control.inspect()
+            active_workers = inspect.active()
+            if not active_workers:
+                print("❌ No Celery workers found! Please start workers first.")
+                return jsonify({
+                    'success': False,
+                    'message': 'No Celery workers available. Please start the backend services first.'
+                }), 500
+            else:
+                print(f"✅ Found {len(active_workers)} active Celery workers")
+        except Exception as e:
+            print(f"❌ Could not check workers: {e}")
             return jsonify({
                 'success': False,
-                'message': 'Failed to start parallel processing system. Please ensure Redis is installed and running.',
-                'error': result.stderr
+                'message': 'Could not connect to Celery workers. Please check backend services.'
             }), 500
         
-        print("✅ Parallel processing system is ready, starting scraping task...")
+        print("✅ Starting scraping task...")
         
         # Start the scraping task with selected options or months
         if selected_options:
-            # For now, we'll use the existing monthly task but pass the selected options
-            # TODO: Create a new task for individual policy options
-            task = scrape_all_policies_task.delay()
-            message = f'Parallel scraping task started for {len(selected_options)} selected policy options'
+            # Pass the selected options to the task
+            task = scrape_selected_policies_task.delay(selected_options)
+            message = f'Scraping task started for {len(selected_options)} selected policy options'
         elif selected_months:
             task = scrape_selected_policies_task.delay(selected_months)
-            message = f'Parallel scraping task started for {len(selected_months)} selected months'
+            message = f'Scraping task started for {len(selected_months)} selected months'
         else:
             task = scrape_all_policies_task.delay()
-            message = 'Parallel scraping task started for all available options'
+            message = 'Scraping task started for all available options'
         
         return jsonify({
             'success': True,
@@ -167,6 +177,66 @@ def get_task_status(task_id):
                 'total': 100,
                 'status': 'Task is waiting to be processed...'
             }
+        elif task.state == 'SUCCESS':
+            # Check if this is a dispatched task (parallel processing)
+            if task.result and isinstance(task.result, dict) and task.result.get('status') == 'dispatched':
+                # Count completed individual tasks
+                group_id = task.result.get('group_id')
+                if group_id:
+                    try:
+                        group_result = celery_app.GroupResult.restore(group_id)
+                        if group_result:
+                            completed = sum(1 for r in group_result.results if r.state == 'SUCCESS')
+                            total = len(group_result.results) if group_result.results else 0
+                            
+                            if completed >= total and total > 0:
+                                response = {
+                                    'state': 'SUCCESS',
+                                    'current': completed,
+                                    'total': total,
+                                    'status': f'Completed {completed}/{total} policies',
+                                    'result': task.result
+                                }
+                            else:
+                                response = {
+                                    'state': 'PROGRESS',
+                                    'current': completed,
+                                    'total': total,
+                                    'status': f'Processing {completed}/{total} policies in parallel...',
+                                    'result': task.result
+                                }
+                        else:
+                            response = {
+                                'state': 'PROGRESS',
+                                'current': 0,
+                                'total': task.result.get('total_pdfs', 100),
+                                'status': 'Processing policies in parallel...',
+                                'result': task.result
+                            }
+                    except Exception as e:
+                        response = {
+                            'state': 'PROGRESS',
+                            'current': 0,
+                            'total': task.result.get('total_pdfs', 100),
+                            'status': 'Processing policies in parallel...',
+                            'result': task.result
+                        }
+                else:
+                    response = {
+                        'state': 'PROGRESS',
+                        'current': 0,
+                        'total': task.result.get('total_pdfs', 100),
+                        'status': 'Processing policies in parallel...',
+                        'result': task.result
+                    }
+            else:
+                response = {
+                    'state': task.state,
+                    'current': task.info.get('current', 0) if task.info else 0,
+                    'total': task.info.get('total', 100) if task.info else 100,
+                    'status': task.info.get('status', '') if task.info else '',
+                    'result': task.result if task.result else None
+                }
         elif task.state != 'FAILURE':
             response = {
                 'state': task.state,
@@ -313,6 +383,81 @@ def clear_data():
             'message': str(e)
         }), 500
 
+@app.route('/api/pause-scraper', methods=['POST'])
+def pause_scraper():
+    """
+    Pause the scraper by revoking active tasks
+    """
+    try:
+        print("⏸️ Pausing scraper...")
+        
+        # Get active tasks
+        inspect = celery_app.control.inspect()
+        active_tasks = inspect.active()
+        
+        if not active_tasks:
+            return jsonify({
+                'success': False,
+                'message': 'No active tasks to pause'
+            }), 400
+        
+        # Revoke all active tasks
+        revoked_count = 0
+        for worker, tasks in active_tasks.items():
+            for task in tasks:
+                celery_app.control.revoke(task['id'], terminate=True)
+                revoked_count += 1
+                print(f"🛑 Revoked task {task['id']} from worker {worker}")
+        
+        print(f"✅ Paused {revoked_count} active tasks")
+        
+        return jsonify({
+            'success': True,
+            'message': f'Paused {revoked_count} active tasks',
+            'revoked_count': revoked_count
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error pausing scraper: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/resume-scraper', methods=['POST'])
+def resume_scraper():
+    """
+    Resume the scraper (this would require restarting tasks)
+    """
+    try:
+        print("▶️ Resume scraper requested...")
+        
+        # Check if there are any active tasks
+        inspect = celery_app.control.inspect()
+        active_tasks = inspect.active()
+        
+        if active_tasks:
+            active_count = sum(len(tasks) for tasks in active_tasks.values())
+            return jsonify({
+                'success': True,
+                'message': f'Scraper is already running with {active_count} active tasks',
+                'active_count': active_count
+            }), 200
+        
+        # If no active tasks, suggest restarting the scraper
+        return jsonify({
+            'success': True,
+            'message': 'No active tasks found. Please restart the scraper to resume processing.',
+            'suggestion': 'restart_scraper'
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error resuming scraper: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
 if __name__ == '__main__':
     print("🚀 Starting Flask backend server...")
     print("📡 API Endpoints:")
@@ -320,6 +465,8 @@ if __name__ == '__main__':
     print("   GET  /api/task-status/<task_id> - Check task status")
     print("   GET  /api/health - Health check")
     print("   GET  /api/system-status - System status")
+    print("   POST /api/pause-scraper - Pause active tasks")
+    print("   POST /api/resume-scraper - Resume scraper")
     print("🌐 Server will be available at: http://localhost:8000")
     
     # Run with Gunicorn for production or Flask dev server for development

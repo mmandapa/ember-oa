@@ -68,18 +68,46 @@ export default function BeautifulDashboard() {
   const [clearing, setClearing] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedPolicy, setSelectedPolicy] = useState<PolicyWithDetails | null>(null)
-  const [currentView, setCurrentView] = useState('dashboard')
+  const [currentView, setCurrentView] = useState('policies')
   const [activeFilter, setActiveFilter] = useState('all')
   const [policyOptions, setPolicyOptions] = useState<PolicyOption[]>([])
   const [selectedOptions, setSelectedOptions] = useState<string[]>([])
   const [loadingOptions, setLoadingOptions] = useState(false)
   const [optionFilter, setOptionFilter] = useState('')
   const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [realtimeStats, setRealtimeStats] = useState({
+    currentTask: null as any,
+    isScraping: false,
+    progress: 0,
+    currentPolicy: '',
+    policiesProcessed: 0,
+    totalPolicies: 0,
+    errors: 0
+  })
+  const [isPaused, setIsPaused] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   useEffect(() => {
     fetchPoliciesWithDetails()
     fetchPolicyOptions()
   }, [])
+
+  // Separate effect for continuous refresh during scraping
+  useEffect(() => {
+    let refreshInterval: NodeJS.Timeout | null = null
+    
+    if (scraping) {
+      refreshInterval = setInterval(() => {
+        fetchPoliciesWithDetails(false) // Don't show loading screen during updates
+      }, 5000) // Refresh every 5 seconds - much more reasonable
+    }
+    
+    return () => {
+      if (refreshInterval) {
+        clearInterval(refreshInterval)
+      }
+    }
+  }, [scraping])
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -96,9 +124,12 @@ export default function BeautifulDashboard() {
     }
   }, [dropdownOpen])
 
-  const fetchPoliciesWithDetails = async () => {
+  const fetchPoliciesWithDetails = async (showLoading = true) => {
     try {
+      if (showLoading) {
       setLoading(true)
+      }
+      setIsRefreshing(true)
       
       // Fetch policies
       const { data: policiesData, error: policiesError } = await supabase
@@ -143,19 +174,23 @@ export default function BeautifulDashboard() {
     } catch (error) {
       console.error('Error fetching policies:', error)
     } finally {
+      if (showLoading) {
       setLoading(false)
+      }
+      setIsRefreshing(false)
     }
   }
 
   const fetchPolicyOptions = async () => {
     try {
       setLoadingOptions(true)
+      console.log('🔄 Fetching policy options...')
       const response = await fetch('http://localhost:8000/api/policy-options')
       const result = await response.json()
       
       if (result.success) {
         setPolicyOptions(result.data)
-        console.log(`📋 Loaded ${result.data.length} policy options`)
+        console.log(`📋 Loaded ${result.data.length} policy options:`, result.data)
       } else {
         console.error('Failed to fetch policy options:', result.message)
       }
@@ -185,7 +220,7 @@ export default function BeautifulDashboard() {
       })
 
       const result = await response.json()
-
+      
       if (result.success) {
         // Start polling for task status
         pollTaskStatus(result.task_id)
@@ -204,37 +239,54 @@ export default function BeautifulDashboard() {
     try {
       const response = await fetch(`http://localhost:8000/api/task-status/${taskId}`)
       const status = await response.json()
+      
+      console.log('📡 Task Status:', status)
+
+      // Update real-time stats
+      setRealtimeStats(prev => ({
+        ...prev,
+        currentTask: status,
+        isScraping: true,
+        progress: status.current || 0,
+        totalPolicies: status.total || 0,
+        currentPolicy: status.status || 'Processing...',
+        policiesProcessed: status.current || 0
+      }))
 
       // Enhanced progress tracking
-      if (status.state === 'COMPLETED' || status.celery_state === 'SUCCESS') {
-        alert('Scraper completed successfully!')
+      if (status.state === 'SUCCESS') {
+        // Show completion message
+        const completedCount = status.current || 0
+        const totalCount = status.total || 0
+        alert(`🎉 Scraping completed successfully!\n\nProcessed ${completedCount}/${totalCount} policies.`)
+        
         setScraping(false)
-        // Refresh the policies list
-        await fetchPoliciesWithDetails()
-      } else if (status.state === 'FAILED' || status.celery_state === 'FAILURE') {
-        alert(`Scraper failed: ${status.error || status.status}`)
+        setRealtimeStats(prev => ({ ...prev, isScraping: false, currentTask: null }))
+        
+        // Final refresh to show all results
+        await fetchPoliciesWithDetails(true) // Show loading for final refresh
+      } else if (status.state === 'FAILURE') {
+        alert(`❌ Scraper failed: ${status.error || status.status}`)
         setScraping(false)
-      } else if (status.state === 'PROCESSING' || status.celery_state === 'PROGRESS') {
+        setRealtimeStats(prev => ({ ...prev, isScraping: false, currentTask: null, errors: prev.errors + 1 }))
+      } else if (status.state === 'PROGRESS' || status.state === 'PENDING') {
         // Show enhanced progress information
-        const progressPercent = status.progress_percent || 0
         const current = status.current || 0
         const total = status.total || 0
         const currentItem = status.status || 'Processing...'
         
-        console.log(`📊 Progress: ${progressPercent}% (${current}/${total}) - ${currentItem}`)
+        console.log(`📊 Progress: ${current}/${total} - ${currentItem}`)
         
-        // Show estimated completion time if available
-        if (status.estimated_completion) {
-          const eta = new Date(status.estimated_completion * 1000).toLocaleTimeString()
-          console.log(`⏰ Estimated completion: ${eta}`)
+        // Refresh policies data occasionally during processing
+        if (current % 5 === 0) { // Only refresh every 5th progress update
+          fetchPoliciesWithDetails(false) // Don't show loading screen during updates
         }
         
-        // Continue polling with adaptive interval
-        const pollInterval = status.should_throttle ? 5000 : 2000 // Slower polling if throttled
-        setTimeout(() => pollTaskStatus(taskId), pollInterval)
+        // Continue polling with reasonable interval
+        setTimeout(() => pollTaskStatus(taskId), 2000) // Poll every 2 seconds - much more reasonable
       } else {
-        // Still processing, continue polling
-        setTimeout(() => pollTaskStatus(taskId), 2000)
+        // Still processing, continue polling with reasonable interval
+        setTimeout(() => pollTaskStatus(taskId), 2000) // Poll every 2 seconds
       }
     } catch (error) {
       console.error('Error checking task status:', error)
@@ -273,6 +325,52 @@ export default function BeautifulDashboard() {
       alert(`Failed to clear data: ${error.message}`)
     } finally {
       setClearing(false)
+    }
+  }
+
+  const pauseScraper = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/pause-scraper', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+      
+      const result = await response.json()
+      
+      if (result.success) {
+        setIsPaused(true)
+        alert('Scraper paused successfully!')
+      } else {
+        throw new Error(result.message || 'Failed to pause scraper')
+      }
+    } catch (error) {
+      console.error('Error pausing scraper:', error)
+      alert('Failed to pause scraper: ' + error)
+    }
+  }
+
+  const resumeScraper = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/resume-scraper', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+      
+      const result = await response.json()
+      
+      if (result.success) {
+        setIsPaused(false)
+        alert('Scraper resumed successfully!')
+      } else {
+        throw new Error(result.message || 'Failed to resume scraper')
+      }
+    } catch (error) {
+      console.error('Error resuming scraper:', error)
+      alert('Failed to resume scraper: ' + error)
     }
   }
 
@@ -385,63 +483,60 @@ export default function BeautifulDashboard() {
               Cigna Policy Hub
             </div>
           </div>
-          <div className="nav-menu">
-            <button 
-              className={`nav-item ${currentView === 'dashboard' ? 'active' : ''}`} 
-              onClick={() => showView('dashboard')}
-            >
-              <i className="fas fa-chart-bar"></i>
-              Dashboard
-            </button>
-            <button 
-              className={`nav-item ${currentView === 'policies' ? 'active' : ''}`} 
-              onClick={() => showView('policies')}
-            >
+          
+          {/* Real-time Stats Section */}
+          <div className="stats-section">
+            <div className="stats-title">
+              <i className="fas fa-chart-line"></i>
+              Live Stats
+              {isRefreshing && (
+                <span className="refresh-indicator">
+                  <i className="fas fa-sync-alt fa-spin"></i>
+                  Updating...
+                </span>
+              )}
+            </div>
+            
+            {realtimeStats.isScraping ? (
+              <div className="scraping-stats">
+                <div className="scraping-indicator">
+                  <i className="fas fa-spinner fa-spin"></i>
+                  <span>Scraping in Progress</span>
+                </div>
+                <div className="progress-bar">
+                  <div 
+                    className="progress-fill" 
+                    style={{ width: `${(realtimeStats.progress / Math.max(realtimeStats.totalPolicies, 1)) * 100}%` }}
+                  ></div>
+                </div>
+                <div className="progress-text">
+                  {realtimeStats.policiesProcessed} / {realtimeStats.totalPolicies} policies
+                </div>
+                <div className="current-policy">
               <i className="fas fa-file-alt"></i>
-              All Policies
-            </button>
-            <button 
-              className={`nav-item ${currentView === 'recent' ? 'active' : ''}`} 
-              onClick={() => showView('recent')}
-            >
-              <i className="fas fa-clock"></i>
-              Recent Updates
-            </button>
-            <button 
-              className={`nav-item ${currentView === 'medical' ? 'active' : ''}`} 
-              onClick={() => showView('medical')}
-            >
-              <i className="fas fa-stethoscope"></i>
-              Medical Policies
-            </button>
-            <button 
-              className={`nav-item ${currentView === 'pharmacy' ? 'active' : ''}`} 
-              onClick={() => showView('pharmacy')}
-            >
-              <i className="fas fa-pills"></i>
-              Pharmacy
-            </button>
-            <button 
-              className={`nav-item ${currentView === 'behavioral' ? 'active' : ''}`} 
-              onClick={() => showView('behavioral')}
-            >
-              <i className="fas fa-brain"></i>
-              Behavioral Health
-            </button>
-            <button 
-              className={`nav-item ${currentView === 'codes' ? 'active' : ''}`} 
-              onClick={() => showView('codes')}
-            >
-              <i className="fas fa-code"></i>
-              Medical Codes
-            </button>
-            <button 
-              className={`nav-item ${currentView === 'changes' ? 'active' : ''}`} 
-              onClick={() => showView('changes')}
-            >
-              <i className="fas fa-edit"></i>
-              Document Changes
-            </button>
+                  {realtimeStats.currentPolicy}
+                </div>
+              </div>
+            ) : (
+              <div className="static-stats">
+                <div className="stat-item">
+                  <div className="stat-number">{stats.totalPolicies}</div>
+                  <div className="stat-label">Total Policies</div>
+                </div>
+                <div className="stat-item">
+                  <div className="stat-number">{stats.totalCodes}</div>
+                  <div className="stat-label">Medical Codes</div>
+                </div>
+                <div className="stat-item">
+                  <div className="stat-number">{stats.totalDocuments}</div>
+                  <div className="stat-label">References</div>
+                </div>
+                <div className="stat-item">
+                  <div className="stat-number">{stats.totalChanges}</div>
+                  <div className="stat-label">Changes</div>
+                </div>
+              </div>
+            )}
           </div>
         </nav>
 
@@ -449,14 +544,7 @@ export default function BeautifulDashboard() {
         <main className="main-content">
           <header className="main-header">
             <h1 className="page-title">
-              {currentView === 'dashboard' ? 'Dashboard' :
-               currentView === 'policies' ? 'All Policies' :
-               currentView === 'recent' ? 'Recent Updates' :
-               currentView === 'medical' ? 'Medical Policies' :
-               currentView === 'pharmacy' ? 'Pharmacy Policies' :
-               currentView === 'behavioral' ? 'Behavioral Health' :
-               currentView === 'codes' ? 'Medical Codes' :
-               'Document Changes'}
+              All Policies
             </h1>
             <div className="search-container">
               <i className="fas fa-search search-icon"></i>
@@ -497,7 +585,10 @@ export default function BeautifulDashboard() {
             
             {/* Monthly PDF Selection Dropdown */}
             <div className="monthly-dropdown-section">
-              <div className="dropdown-trigger" onClick={() => setDropdownOpen(!dropdownOpen)}>
+              <div className="dropdown-trigger" onClick={() => {
+                console.log('🖱️ Dropdown clicked, current state:', { dropdownOpen, policyOptionsLength: policyOptions.length })
+                setDropdownOpen(!dropdownOpen)
+              }}>
                 <div className="trigger-content">
                   <span className="trigger-icon">📅</span>
                   <span className="trigger-text">
@@ -551,6 +642,8 @@ export default function BeautifulDashboard() {
                   <div className="options-container">
                     {loadingOptions ? (
                       <div className="loading-state">🔄 Loading...</div>
+                    ) : policyOptions.length === 0 ? (
+                      <div className="loading-state">❌ No policy options available</div>
                     ) : (
                       policyOptions
                         .filter(option => 
@@ -593,6 +686,15 @@ export default function BeautifulDashboard() {
               >
                 {scraping ? '⏳ Scraping...' : '🚀 Run Scraper'}
               </button>
+              {scraping && (
+                <button
+                  onClick={isPaused ? resumeScraper : pauseScraper}
+                  disabled={clearing}
+                  className={`action-btn ${isPaused ? 'success' : 'warning'}`}
+                >
+                  {isPaused ? '▶️ Resume' : '⏸️ Pause'}
+                </button>
+              )}
               <button
                 onClick={clearAllData}
                 disabled={scraping || clearing}
@@ -604,41 +706,7 @@ export default function BeautifulDashboard() {
           </header>
 
           <div className="content-area">
-            {/* Dashboard View */}
-            {currentView === 'dashboard' && (
-              <>
-                <div className="stats-grid">
-                  <div className="stat-card">
-                    <div className="stat-number">{stats.totalPolicies}</div>
-                    <div className="stat-label">Total Policies Scraped</div>
-                  </div>
-                  <div className="stat-card">
-                    <div className="stat-number">{stats.recentUpdates}</div>
-                    <div className="stat-label">Updated This Week</div>
-                  </div>
-                  <div className="stat-card">
-                    <div className="stat-number">{stats.totalCodes}</div>
-                    <div className="stat-label">Medical Codes Extracted</div>
-                  </div>
-                  <div className="stat-card">
-                    <div className="stat-number">{stats.totalChanges}</div>
-                    <div className="stat-label">Document Changes</div>
-                  </div>
-                  <div className="stat-card">
-                    <div className="stat-number">{stats.totalDocuments}</div>
-                    <div className="stat-label">Referenced Documents</div>
-                  </div>
-                  <div className="stat-card">
-                    <div className="stat-number">{stats.categories}</div>
-                    <div className="stat-label">Policy Categories</div>
-                  </div>
-                </div>
-
-              </>
-            )}
-
             {/* Policies List */}
-            {currentView !== 'dashboard' && (
               <div className="policy-list">
                 {loading ? (
                   <div className="loading">
@@ -738,7 +806,6 @@ export default function BeautifulDashboard() {
                   </table>
                 )}
               </div>
-            )}
           </div>
         </main>
 
@@ -747,7 +814,7 @@ export default function BeautifulDashboard() {
           <aside className="detail-panel active">
             <div className="detail-header">
               <div className="detail-title-section">
-                <div className="detail-title">{selectedPolicy.title}</div>
+              <div className="detail-title">{selectedPolicy.title}</div>
                 <button 
                   className="close-button" 
                   onClick={() => setSelectedPolicy(null)}
@@ -928,6 +995,106 @@ export default function BeautifulDashboard() {
           gap: 10px;
         }
 
+        .stats-section {
+          padding: 20px;
+          border-bottom: 1px solid #e1e4e8;
+        }
+
+        .stats-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: #586069;
+          margin-bottom: 16px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .refresh-indicator {
+          margin-left: auto;
+          color: #6c757d;
+          font-size: 11px;
+          font-weight: normal;
+          opacity: 0.8;
+        }
+
+        .scraping-stats {
+          background: #f6f8fa;
+          border-radius: 8px;
+          padding: 16px;
+          border: 1px solid #e1e4e8;
+        }
+
+        .scraping-indicator {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 12px;
+          color: #0066cc;
+          font-weight: 500;
+        }
+
+        .progress-bar {
+          width: 100%;
+          height: 8px;
+          background: #e1e4e8;
+          border-radius: 4px;
+          overflow: hidden;
+          margin-bottom: 8px;
+        }
+
+        .progress-fill {
+          height: 100%;
+          background: linear-gradient(90deg, #0066cc, #4dabf7);
+          transition: width 0.3s ease;
+        }
+
+        .progress-text {
+          font-size: 12px;
+          color: #586069;
+          margin-bottom: 8px;
+        }
+
+        .current-policy {
+          font-size: 12px;
+          color: #24292e;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          background: #ffffff;
+          padding: 8px;
+          border-radius: 4px;
+          border: 1px solid #e1e4e8;
+        }
+
+        .static-stats {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+        }
+
+        .stat-item {
+          text-align: center;
+          padding: 12px;
+          background: #f6f8fa;
+          border-radius: 6px;
+          border: 1px solid #e1e4e8;
+        }
+
+        .stat-item .stat-number {
+          font-size: 18px;
+          font-weight: 700;
+          color: #0066cc;
+          margin-bottom: 4px;
+        }
+
+        .stat-item .stat-label {
+          font-size: 11px;
+          color: #586069;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
         .nav-menu {
           flex: 1;
           padding: 16px 0;
@@ -979,6 +1146,8 @@ export default function BeautifulDashboard() {
           align-items: center;
           justify-content: space-between;
           gap: 20px;
+          position: relative;
+          overflow: visible;
         }
 
         .page-title {
@@ -1302,6 +1471,17 @@ export default function BeautifulDashboard() {
           color: white;
           border-color: #f59e0b;
           cursor: not-allowed;
+        }
+
+        .action-btn.warning {
+          background: #f59e0b;
+          color: white;
+          border-color: #f59e0b;
+        }
+
+        .action-btn.warning:hover:not(:disabled) {
+          background: #d97706;
+          border-color: #d97706;
         }
 
         .action-btn:hover:not(.loading) {
@@ -1899,7 +2079,7 @@ export default function BeautifulDashboard() {
             flex-direction: row;
             justify-content: center;
           }
-
+          
           .actions {
             order: -1;
             width: 100%;
