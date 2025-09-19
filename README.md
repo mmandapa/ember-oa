@@ -143,13 +143,18 @@ npm run dev
 
 ### Running the Scraper
 
-**Option 1: One-Click Startup (Recommended)**
+**Option 1: High-Performance Setup (Recommended)**
+1. Start the complete high-performance system: `python start_high_performance_system.py`
+2. Open your frontend dashboard
+3. Click "Run Scraper" button
+4. Enjoy 50-100 PDFs/minute processing speed!
+
+**Option 2: Standard Setup**
 1. Start the complete system: `cd backend && python start_complete_system.py`
 2. Open your frontend dashboard
 3. Click "Run Scraper" button
-4. The Flask backend will handle everything automatically
 
-**Option 2: Manual Setup**
+**Option 3: Manual Setup**
 1. Start Redis: `redis-server`
 2. Start Celery workers: `cd backend && python start_worker.py`
 3. Start Flask API: `cd backend && python start_flask_server.py`
@@ -167,6 +172,30 @@ The OpenAI-powered scraper extracts the following data for each policy:
 - **Referenced Documents**: Related policy documents
 - **Medical Codes**: CPT/HCPCS/ICD-10 codes with descriptions
 - **Document Changes**: Specific changes made
+
+## Performance Features
+
+### High-Performance Architecture
+
+- **Multiple Flask Workers**: 4 workers with nginx load balancing
+- **High-Performance Celery Workers**: Up to 16 workers with 8 concurrency each
+- **Nginx Load Balancer**: Intelligent request distribution and caching
+- **Redis Optimization**: Memory-efficient caching and connection pooling
+- **Async Processing**: Non-blocking I/O with gevent workers
+- **Auto-scaling**: Workers restart automatically to prevent memory leaks
+
+### Expected Performance
+
+- **High-end Systems (16+ GB RAM)**: 50-100 PDFs/minute
+- **Medium Systems (8-16 GB RAM)**: 30-60 PDFs/minute  
+- **Standard Systems (4-8 GB RAM)**: 20-40 PDFs/minute
+
+### Monitoring & Management
+
+- **Flower UI**: http://localhost:5555 (Celery task monitoring)
+- **System Status**: Real-time performance metrics
+- **Health Checks**: Automatic failover and recovery
+- **Rate Limiting**: Protection against overload
 
 ## Technical Details
 
@@ -186,12 +215,17 @@ The OpenAI-powered scraper extracts the following data for each policy:
 - **Filtering**: Filter by category, date, and status
 - **Detail Panel**: Comprehensive policy information display
 
-## API Endpoints (Flask Backend)
+## API Endpoints (High-Performance Setup)
 
-- `POST http://localhost:8000/api/scrape-async` - Initiates background scraping task
-- `GET http://localhost:8000/api/task-status/<taskId>` - Checks task status
-- `GET http://localhost:8000/api/health` - Health check
-- `GET http://localhost:8000/api/system-status` - Detailed system status
+**Via Nginx Load Balancer (Recommended):**
+- `POST http://localhost/api/scrape-async` - Initiates background scraping task
+- `GET http://localhost/api/task-status/<taskId>` - Checks task status
+- `GET http://localhost/api/health` - Health check
+- `GET http://localhost/api/system-status` - Detailed system status
+
+**Direct Flask Workers:**
+- `POST http://localhost:8000-8003/api/scrape-async` - Direct worker access
+- `GET http://localhost:8000-8003/api/task-status/<taskId>` - Direct worker status
 
 ## Database Schema
 

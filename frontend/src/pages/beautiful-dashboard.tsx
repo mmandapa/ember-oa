@@ -122,8 +122,8 @@ export default function BeautifulDashboard() {
     try {
       setScraping(true)
       
-      // Start the async scraping task via Flask backend
-      const response = await fetch('http://localhost:8000/api/scrape-async', {
+      // Start the async scraping task via nginx load balancer
+      const response = await fetch('http://localhost/api/scrape-async', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -148,7 +148,7 @@ export default function BeautifulDashboard() {
 
   const pollTaskStatus = async (taskId: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/api/task-status/${taskId}`)
+      const response = await fetch(`http://localhost/api/task-status/${taskId}`)
       const status = await response.json()
 
       if (status.status === 'SUCCESS') {
@@ -183,42 +183,26 @@ export default function BeautifulDashboard() {
     try {
       setClearing(true)
       
-      // Delete all data from all tables
-      const { error: policiesError } = await supabase
-        .from('policy_updates')
-        .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000')
+      // Use Flask API to clear data
+      const response = await fetch('http://localhost/api/clear-data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
 
-      const { error: codesError } = await supabase
-        .from('medical_codes')
-        .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000')
+      const result = await response.json()
 
-      const { error: docsError } = await supabase
-        .from('referenced_documents')
-        .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000')
-
-      const { error: changesError } = await supabase
-        .from('document_changes')
-        .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000')
-
-      const { error: logsError } = await supabase
-        .from('scraping_logs')
-        .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000')
-
-      if (policiesError || codesError || docsError || changesError || logsError) {
-        throw new Error('Failed to delete some data')
+      if (result.success) {
+        await fetchPoliciesWithDetails()
+        alert(`All data cleared successfully! ${result.message}`)
+      } else {
+        throw new Error(result.message || 'Failed to clear data')
       }
-
-      await fetchPoliciesWithDetails()
-      alert('All data cleared successfully!')
       
     } catch (error) {
       console.error('Error clearing data:', error)
-      alert('Failed to clear data')
+      alert(`Failed to clear data: ${error.message}`)
     } finally {
       setClearing(false)
     }

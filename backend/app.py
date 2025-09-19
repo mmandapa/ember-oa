@@ -161,6 +161,62 @@ def system_status():
             'error': str(e)
         }), 500
 
+@app.route('/api/clear-data', methods=['POST'])
+def clear_data():
+    """
+    Clear all scraped data from the database
+    """
+    try:
+        from supabase import create_client, Client
+        import os
+        
+        # Initialize Supabase client
+        supabase_url = os.getenv('NEXT_PUBLIC_SUPABASE_URL')
+        supabase_key = os.getenv('NEXT_PUBLIC_SUPABASE_ANON_KEY')
+        
+        if not supabase_url or not supabase_key:
+            return jsonify({
+                'success': False,
+                'message': 'Supabase credentials not configured'
+            }), 500
+        
+        supabase: Client = create_client(supabase_url, supabase_key)
+        
+        # Clear data in order (respecting foreign key constraints)
+        tables_to_clear = [
+            'medical_codes',
+            'referenced_documents', 
+            'document_changes',
+            'policy_updates'
+        ]
+        
+        cleared_counts = {}
+        
+        for table in tables_to_clear:
+            try:
+                # Delete all records from table
+                result = supabase.table(table).delete().neq('id', '00000000-0000-0000-0000-000000000000').execute()
+                cleared_counts[table] = len(result.data) if result.data else 0
+                print(f"✅ Cleared {cleared_counts[table]} records from {table}")
+            except Exception as e:
+                print(f"❌ Error clearing {table}: {e}")
+                cleared_counts[table] = f"Error: {str(e)}"
+        
+        total_cleared = sum(count for count in cleared_counts.values() if isinstance(count, int))
+        
+        return jsonify({
+            'success': True,
+            'message': f'Successfully cleared {total_cleared} records from database',
+            'details': cleared_counts
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error clearing data: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
 if __name__ == '__main__':
     print("🚀 Starting Flask backend server...")
     print("📡 API Endpoints:")
